@@ -88,6 +88,51 @@ let record_t1 _trigger t (tx, rx) =
       Logs.err ~src:t.src (fun m ->
           m "Unexpected exception: %s" (Printexc.to_string exn))
 
+let average_and_diff ~earlier ~later =
+  let diff = Ptime.diff later earlier in
+  let diff = Ptime.Span.to_float_s diff in
+  let diff = diff /. 2. in
+  (* NOTE(dinosaure): [of_float_s] fails only if we give an NaN value or
+      something bigger than ~2'941'758 years... *)
+  let diff = Option.get (Ptime.Span.of_float_s diff) in
+  match Ptime.add_span earlier diff with
+  | Some avg -> (avg, diff)
+  | None ->
+      Log.err (fun m ->
+          m "Impossible to calculate the average between %a and %a" Ptime.pp
+            earlier Ptime.pp later);
+      assert false
+
+[@@@warning "-26"]
+
+let analyze t ~t1 ~t4 pkt =
+  Logs.debug ~src:t.src (fun m ->
+      m "dispersion: %f"
+        ((pkt.Packet.root_delay /. 2.) +. pkt.Packet.root_dispersion));
+  let remote_rx = Option.get pkt.Packet.rx_ts in
+  let remote_tx = Option.get pkt.Packet.tx_ts in
+  let remote_avg, remote_interval =
+    average_and_diff ~earlier:remote_rx ~later:remote_tx
+  in
+  let local_rx = t4 in
+  let local_tx = t1 in
+  let local_avg, local_interval =
+    average_and_diff ~earlier:local_rx ~later:local_rx
+  in
+  let root_delay = pkt.Packet.root_delay in
+  let root_dispersion = pkt.Packet.root_dispersion in
+  Logs.debug ~src:t.src (fun m -> m "t1: %a" (Ptime.pp_human ~frac_s:9 ()) t1);
+  Logs.debug ~src:t.src (fun m -> m "t4: %a" (Ptime.pp_human ~frac_s:9 ()) t4);
+  Logs.debug ~src:t.src (fun m ->
+      m "remote_avg: %a" (Ptime.pp_human ~frac_s:9 ()) remote_avg);
+  Logs.debug ~src:t.src (fun m ->
+      m "remote_interval: %a" Ptime.Span.pp remote_interval);
+  Logs.debug ~src:t.src (fun m ->
+      m "local_avg: %a" (Ptime.pp_human ~frac_s:9 ()) local_avg);
+  Logs.debug ~src:t.src (fun m ->
+      m "local_interval: %a" Ptime.Span.pp local_interval);
+  ()
+
 let valid_nonce ~org ts =
   let str0 = Packet.ptime_to_string (Some org) in
   let str1 = Packet.ptime_to_string (Some ts) in
@@ -101,12 +146,13 @@ let record_t4 _trigger t (rx, tx) =
   | New_round_trip _, Ok (t4, pkt) ->
       t.remote_poll <- Some pkt.Packet.poll;
       t.state <- Rx_received { t4; pkt }
-  | Tx_sent { t1 }, Ok (_t4, pkt) -> begin
+  | Tx_sent { t1 }, Ok (t4, pkt) -> begin
       match pkt.Packet.org_ts with
       | Some org when valid_nonce ~org t1 ->
           t.remote_poll <- Some pkt.Packet.poll;
           t.number_of_roundtrips <- t.number_of_roundtrips + 1;
-          t.state <- End_of_round_trip
+          t.state <- End_of_round_trip;
+          analyze t ~t1 ~t4 pkt
       | Some org_ts ->
           Logs.warn ~src:t.src (fun m ->
               m "Unexpected NTPv4 packet (org timestamp mismatches)");
