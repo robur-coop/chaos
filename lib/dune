@@ -1,0 +1,6 @@
+(library
+ (name chaos)
+ (libraries miou mirage-crypto-rng slice.bstr ipaddr fmt ptime logs)
+ (foreign_stubs
+  (language c)
+  (names regress)))
