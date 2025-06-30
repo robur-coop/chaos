@@ -33,3 +33,5 @@ val get_frequency_range : t -> float * float
 val get_delay_test_data :
   t -> Ptime.t -> (float * float * float * float * float) option
 (** [get_delay_test_data] gets data needed for testing NTP delay. *)
+
+val get_predict_offset : t -> Ptime.t -> float

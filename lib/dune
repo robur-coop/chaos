@@ -1,6 +1,17 @@
 (library
  (name chaos)
- (libraries miou mirage-crypto-rng slice.bstr ipaddr fmt ptime logs)
+ (modules chaos stats local sample state packet sched)
+ (public_name chaos)
+ (libraries mirage-crypto-rng slice.bstr ipaddr fmt ptime logs)
  (foreign_stubs
   (language c)
   (names regress)))
+
+(library
+ (name tscclock)
+ (modules tscclock)
+ (public_name chaos.tscclock)
+ (libraries ptime)
+ (foreign_stubs
+   (language c)
+   (names tscclock)))

@@ -155,23 +155,38 @@ let get_runsbuf_index t idx =
   + (2 * _MAX_SAMPLES * _REGRESS_RUNS_RATIO)
   - t.n_samples
   + idx
-  - 1)
+  + 1)
   land 127
+
+let pp_timespec ppf t =
+  let d, ps = Ptime.(Span.to_d_ps (to_span t)) in
+  let tv_sec = 86400 * d in
+  let tv_sec = tv_sec + Int64.(to_int (div ps 1_000_000_000_000L)) in
+  let rem_ps = Int64.(rem ps 1_000_000_000_000L) in
+  let tv_nsec = Int64.(div rem_ps 1_000L) in
+  Fmt.pf ppf "{ @[<hov>.tv_sec= %d,@ .tv_nsec= %Ld@] }"
+    tv_sec tv_nsec
 
 let convert_to_intervals t ~off times_backs =
   let ts = t.sample_times.(t.last_sample) in
-  for i = off - t.runs_samples to t.n_samples - 1 do
+  Fmt.epr ">>> %a\n%!" pp_timespec ts;
+  for i = -t.runs_samples to t.n_samples - 1 do
     let diff = Ptime.diff t.sample_times.(get_runsbuf_index t i) ts in
-    Float.Array.set times_backs i (Ptime.Span.to_float_s diff)
+    Fmt.epr ">>> [%d:%d] <- %e\n%!" i (get_runsbuf_index t i) (Ptime.Span.to_float_s diff);
+    Float.Array.set times_backs (off + i) (Ptime.Span.to_float_s diff)
   done
 
 let get_t_coef =
   let coefs =
     [|
-       636.6; 31.6; 12.92; 8.61; 6.869; 5.959; 5.408; 5.041; 4.781; 4.587; 4.437
-     ; 4.318; 4.221; 4.140; 4.073; 4.015; 3.965; 3.922; 3.883; 3.850; 3.819
-     ; 3.792; 3.768; 3.745; 3.725; 3.707; 3.690; 3.674; 3.659; 3.591; 3.582
-     ; 3.574; 3.566; 3.558; 3.551
+       636.6;  31.6; 12.92;  8.61; 6.869
+     ; 5.959; 5.408; 5.041; 4.781; 4.587
+     ; 4.437; 4.318; 4.221; 4.140; 4.073
+     ; 4.015; 3.965; 3.922; 3.883; 3.850
+     ; 3.819; 3.792; 3.768; 3.745; 3.725
+     ; 3.707; 3.690; 3.674; 3.659; 3.646
+     ; 3.633; 3.622; 3.611; 3.601; 3.591
+     ; 3.582; 3.574; 3.566; 3.558; 3.551
     |]
   in
   fun dof -> if dof <= 40 then coefs.(dof - 1) else 3.5
@@ -215,7 +230,7 @@ let correct_asymmetry t times_back offsets =
     let min_delay = min_round_trip_delay t in
     let n = t.runs_samples + t.n_samples in
     for i = 0 to n - 1 do
-      let idx = get_runsbuf_index t i - t.runs_samples in
+      let idx = get_runsbuf_index t (i - t.runs_samples) in
       Float.Array.set delays i (Float.Array.get t.peer_delays idx -. min_delay)
     done;
     if Float.abs t.fixed_asymmetry <= _MAX_ASYMMETRY then begin
@@ -289,11 +304,11 @@ let prune t new_oldest =
    set of most recent samples that give the tightest confidence interval for the
    frequency, and truncates the register down to that number of samples. *)
 let regression local t =
-  let times_back = Float.Array.create (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) in
-  let offsets = Float.Array.create (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) in
-  let peer_distances = Float.Array.create _MAX_SAMPLES in
-  let weights = Float.Array.create _MAX_SAMPLES in
-  let min_distance = ref 0. in
+  let times_back = Float.Array.make (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) 0.0 in
+  let offsets = Float.Array.make (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) 0.0 in
+  let peer_distances = Float.Array.make _MAX_SAMPLES 0.0 in
+  let weights = Float.Array.make _MAX_SAMPLES 0.0 in
+  let min_distance = ref Float.max_float in
   begin
     convert_to_intervals t ~off:t.runs_samples times_back;
     if t.n_samples > 0 then begin
@@ -303,6 +318,9 @@ let regression local t =
       done;
       for i = 0 to t.n_samples - 1 do
         let j = get_buf_index t i in
+        Fmt.epr ">>> 0.5 * [%d]%e + [%d]%e\n%!"
+          (get_runsbuf_index t i) (Float.Array.get t.peer_delays (get_runsbuf_index t i))
+          j (Float.Array.get t.peer_dispersions j);
         let value =
           (0.5 *. Float.Array.get t.peer_delays (get_runsbuf_index t i))
           +. Float.Array.get t.peer_dispersions j
@@ -312,35 +330,46 @@ let regression local t =
           min_distance := Float.Array.get peer_distances i
       done;
       let precision = Local.precision_as_quantum local in
+      Fmt.epr ">>> precision: %e\n%!" precision;
       let median_distance = Regress.find_median peer_distances t.n_samples in
-      let sd = (median_distance -. !min_distance) /. _SD_TO_DIST_RATIO in
+      Fmt.epr ">>> peer_distances[0]= %e\n%!" (Float.Array.get peer_distances 0);
+      Fmt.epr ">>> n_samples= %d\n%!" t.n_samples;
+      Fmt.epr ">>> median: %e\n%!" median_distance;
+      let sd = (median_distance -. !min_distance) /. 0.7 in
+      Fmt.epr ">>> sd = (%e - %e) / %e = %e\n%!" median_distance !min_distance _SD_TO_DIST_RATIO sd;
       let sd = clamp ~min:precision ~max:!min_distance sd in
+      Fmt.epr ">>> sd = %e\n%!" sd;
       min_distance := !min_distance +. precision;
-      for i = 0 to t.n_samples do
-        let sd_weight = ref 1. in
-        if Float.Array.get peer_distances i > !min_distance then
+      Fmt.epr ">>> min_distance: %e\n%!" !min_distance;
+      let sd_weight = ref 1. in
+      for i = 0 to t.n_samples - 1 do
+        sd_weight := 1.;
+        if Float.Array.get peer_distances i > !min_distance then begin
           sd_weight :=
             !sd_weight
             +. ((Float.Array.get peer_distances i -. !min_distance) /. sd);
+          Fmt.epr ">>> sd_weight += ([%d]%e - %e) / %e\n%!"
+            i (Float.Array.get peer_distances i) !min_distance sd;
+        end;
+        Fmt.epr ">>> sd_weight: %e\n%!" !sd_weight;
         Float.Array.set weights i (!sd_weight *. !sd_weight)
       done;
       correct_asymmetry t times_back offsets
     end;
-    let est = Float.Array.create 5 in
-    let res = Bytes.create (8 * 3) in
+    let est = Float.Array.make 5 0.0 in
+    let res = Bytes.create (4 * 3) in
     t.regression_ok <-
       Regress.find_best_regression ~runs_samples:t.runs_samples
         ~n_samples:t.n_samples ~min_samples:t.min_samples ~times_back ~offsets
         ~weights ~est ~res;
-    let[@warning "-8"] [
-                     est_intercept; est_slope; est_var; est_intercept_sd
-                   ; est_slope_sd
-                   ] =
-      Float.Array.to_list est
-    in
-    let best_start = Bytes.get_int64_ne res 0 |> Int64.to_int in
-    let nruns = Bytes.get_int64_ne res 8 |> Int64.to_int in
-    let degrees_of_freedom = Bytes.get_int64_ne res 16 |> Int64.to_int in
+    let est_intercept = Float.Array.get est 0 in
+    let est_slope = Float.Array.get est 1 in
+    let est_var = Float.Array.get est 2 in
+    let est_intercept_sd = Float.Array.get est 3 in
+    let est_slope_sd = Float.Array.get est 4 in
+    let best_start = Bytes.get_int32_ne res 0 |> Int32.to_int in
+    let nruns = Bytes.get_int32_ne res 4 |> Int32.to_int in
+    let degrees_of_freedom = Bytes.get_int32_ne res 8 |> Int32.to_int in
     if t.regression_ok then begin
       t.estimated_frequency <- est_slope;
       t.estimated_frequency_sd <-
@@ -443,3 +472,16 @@ let get_delay_test_data t sample_time =
     let skew = t.skew in
     let std_dev = t.std_dev in
     Some (last_sample_ago, predicted_offset, min_delay, skew, std_dev)
+
+let _MIN_SAMPLES_FOR_REGRESS = 3
+
+let get_predict_offset t w =
+  if t.n_samples < _MIN_SAMPLES_FOR_REGRESS
+  then
+    if t.n_samples > 0
+    then Float.Array.get t.offsets t.last_sample
+    else 0.0
+  else
+    let elapsed = Ptime.(Span.sub (to_span w) t.offset_time) in
+    let elapsed = Ptime.Span.to_float_s elapsed in
+    t.estimated_offset +. elapsed *. t.estimated_frequency

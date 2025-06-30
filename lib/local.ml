@@ -2,8 +2,6 @@ let src = Logs.Src.create "chaos.local"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-type _ Effect.t += Monotonic : int Effect.t
-
 type t = {
     mutable current_freq_ppm: float (* the current frequency, in ppm *)
   ; mutable max_freq_ppm: float (* Maximum allowed frequency, in ppm *)
@@ -19,11 +17,11 @@ let pp ppf t =
     t.current_freq_ppm t.max_clock_error t.temp_comp_ppm t.precision_quantum
     t.max_clock_error
 
-let measure_clock_precision () =
-  let old_ts = ref (Effect.perform Monotonic) in
+let measure_clock_precision ~now () =
+  let old_ts = ref (now ()) in
   let best = ref 1_000_000_000 in
   for _ = 0 to 99 do
-    let ts = Effect.perform Monotonic in
+    let ts = now () in
     let diff = ts - !old_ts in
     old_ts := ts;
     if diff > 0 then if diff < !best then best := diff
@@ -32,9 +30,12 @@ let measure_clock_precision () =
 
 let clamp ~min:min_ ~max:max_ value = Float.max (Float.min value max_) min_
 
-let make ?(max_freq_ppm = 500_000.0) () =
-  let precision_quantum = measure_clock_precision () in
-  let precision_quantum = clamp ~min:1e-9 ~max:1. precision_quantum in
+let make ?(max_freq_ppm = 500_000.0) ?precision_quantum now =
+  let precision_quantum = match precision_quantum with
+    | Some value -> clamp ~min:1e-9 ~max:1. value
+    | None ->
+      let precision_quantum = measure_clock_precision ~now () in
+      clamp ~min:1e-9 ~max:1. precision_quantum in
   let precision_log = Float.(round (log precision_quantum /. log 2.)) in
   let precision_log = Float.to_int precision_log in
   assert (precision_log >= -30);

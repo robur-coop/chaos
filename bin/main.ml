@@ -1,3 +1,5 @@
+let () = Printexc.record_backtrace true
+
 let rec clean_up_sleepers orphans =
   match Miou.care orphans with
   | None -> ()
@@ -123,7 +125,9 @@ let rec step udpv4 wk sleepers rxs server =
               (Ptime.pp_human ~frac_s:9 ())
               !ts);
         Chaos.State.tx_sent tx !ts
-      and error _ = Chaos.State.dst_unreachable tx in
+      and error _ =
+        Logs.debug (fun m -> m "%a:%d unreachable" Ipaddr.V4.pp dst port);
+        Chaos.State.dst_unreachable tx in
       let now () = Tscclock.ptime () in
       (* NOTE(dinosaure): [fn] is executed **after** the discovery
          of routes. When the new NTPv4 packet is sent, we have the most accurate
@@ -147,6 +151,8 @@ let rec step udpv4 wk sleepers rxs server =
 let run udpv4 servers =
   let wk = Wk.create () in
   let actives = Hashtbl.create 0x10 in
+  let local = Chaos.Local.make Tscclock.now in
+  Logs.debug (fun m -> m "precision: %e" (Chaos.Local.precision_as_quantum local));
   let prm =
     Miou.async @@ fun () ->
     let sleepers = Miou.orphans () in
@@ -171,9 +177,9 @@ let run udpv4 servers =
           Seq.iter Miou.cancel prms; terminate sleepers
       | servers -> Wk.sleep wk 1_000_000_000; go rxs servers
     in
-    go [] (List.map Chaos.State.make servers)
+    go [] (List.map (Chaos.State.make ~local) servers)
   in
-  match Miou.await prm with Ok () -> () | Error exn -> raise exn
+  Miou.await_exn prm
 
 let run _ cidr gateway servers =
   Miou_solo5.(run [ Miou_solo5_net.stackv4 ~name:"service" ?gateway cidr ])
@@ -226,9 +232,9 @@ let reporter sources ppf =
         Fmt.(styled `Magenta string)
         (Logs.Src.name src)
     in
-    match print src with
-    | true -> msgf @@ fun ?header ?tags fmt -> pp header tags k ppf fmt
-    | false -> k ()
+    match level, print src with
+    | Logs.Debug, false -> k ()
+    | _, true | _ -> msgf @@ fun ?header ?tags fmt -> pp header tags k ppf fmt
   in
   { Logs.report }
 
