@@ -96,8 +96,7 @@ let clean_up_listeners udpv4 orphans rxs actives wk =
         match Miou.await prm with
         | Ok (`Packet (ts, pkt, src, src_port)) ->
             Hashtbl.remove actives src_port;
-            List.iter (Chaos.State.rx_received ~src ~src_port ~ts pkt) rxs;
-            Logs.debug (fun m -> m "Trigger our main loop")
+            List.iter (Chaos.State.rx_received ~src ~src_port ~ts pkt) rxs
         | Ok (`Unknown port) -> Hashtbl.remove actives port
         | Error Miou.Cancelled -> ()
         | Error exn ->
@@ -127,7 +126,8 @@ let rec step udpv4 wk sleepers rxs server =
         Chaos.State.tx_sent tx !ts
       and error _ =
         Logs.debug (fun m -> m "%a:%d unreachable" Ipaddr.V4.pp dst port);
-        Chaos.State.dst_unreachable tx in
+        Chaos.State.dst_unreachable tx
+      in
       let now () = Tscclock.ptime () in
       (* NOTE(dinosaure): [fn] is executed **after** the discovery
          of routes. When the new NTPv4 packet is sent, we have the most accurate
@@ -152,7 +152,8 @@ let run udpv4 servers =
   let wk = Wk.create () in
   let actives = Hashtbl.create 0x10 in
   let local = Chaos.Local.make Tscclock.now in
-  Logs.debug (fun m -> m "precision: %e" (Chaos.Local.precision_as_quantum local));
+  Logs.debug (fun m ->
+      m "precision: %e" (Chaos.Local.precision_as_quantum local));
   let prm =
     Miou.async @@ fun () ->
     let sleepers = Miou.orphans () in
@@ -167,9 +168,7 @@ let run udpv4 servers =
         | `Stop [] -> (servers, rxs)
         | `Stop rxs' -> (servers, List.rev_append rxs' rxs)
       in
-      Logs.debug (fun m -> m "process %d server(s)" (List.length servers));
       let servers, rxs = List.fold_left fn ([], rxs) servers in
-      Logs.debug (fun m -> m "update listeners (%d rx(s))" (List.length rxs));
       let rxs = clean_up_listeners udpv4 listeners rxs actives wk in
       match servers with
       | [] ->
@@ -184,6 +183,7 @@ let run udpv4 servers =
 let run _ cidr gateway servers =
   Miou_solo5.(run [ Miou_solo5_net.stackv4 ~name:"service" ?gateway cidr ])
   @@ fun (daemon, _tcpv4, udpv4) () ->
+  let _ = Tscclock.init () in
   let rng =
     Mirage_crypto_rng_miou_solo5.initialize (module Mirage_crypto_rng.Fortuna)
   in
@@ -192,7 +192,6 @@ let run _ cidr gateway servers =
     Miou_solo5_net.kill daemon
   in
   Fun.protect ~finally @@ fun () ->
-  let _ = Tscclock.init () in
   Logs.debug (fun m -> m "tscclock_freq: %fGHz" (Tscclock.get_freq ()));
   run udpv4 servers
 
@@ -232,7 +231,7 @@ let reporter sources ppf =
         Fmt.(styled `Magenta string)
         (Logs.Src.name src)
     in
-    match level, print src with
+    match (level, print src) with
     | Logs.Debug, false -> k ()
     | _, true | _ -> msgf @@ fun ?header ?tags fmt -> pp header tags k ppf fmt
   in

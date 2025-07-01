@@ -30,8 +30,10 @@ module Regress = struct
 end
 
 type t = {
-    ref_id: int (* User defined minimum and maximum number of samples *)
-  ; min_samples: int
+    mutable ref_id: int
+  ; mutable src: Logs.src
+  ; source: Ipaddr.V4.t * int
+  ; min_samples: int (* User defined minimum and maximum number of samples *)
   ; max_samples: int
   ; fixed_min_delay: float (* User defined minimum delay *)
   ; fixed_asymmetry: float (* User defined asymmetry of network jitter *)
@@ -87,7 +89,7 @@ let _MIN_ASYMMETRY_RUN = 10
 let _MAX_ASYMMETRY_RUN = 1000
 
 let make ?(min_samples = 1) ?(max_samples = _MAX_SAMPLES) ?(min_delay = 0.)
-    ?(asymmetry = 1.) ref_id =
+    ?(asymmetry = 1.) ?(ref_id = 0) (ipaddr, port) =
   let max_samples = Int.max (Int.min max_samples _MAX_SAMPLES) 1 in
   let min_samples = Int.max (Int.min min_samples max_samples) 1 in
   let sample_times =
@@ -98,8 +100,13 @@ let make ?(min_samples = 1) ?(max_samples = _MAX_SAMPLES) ?(min_delay = 0.)
   let peer_dispersions = Float.Array.create _MAX_SAMPLES in
   let root_delays = Float.Array.create _MAX_SAMPLES in
   let root_dispersions = Float.Array.create _MAX_SAMPLES in
+  let src =
+    Logs.Src.create (Fmt.str "ntp:%a:%d:%04x" Ipaddr.V4.pp ipaddr port 0)
+  in
   {
     ref_id
+  ; source= (ipaddr, port)
+  ; src
   ; min_samples
   ; max_samples
   ; fixed_min_delay= min_delay
@@ -146,6 +153,13 @@ let reset t =
   t.asymmetry_run <- 0;
   t.asymmetry <- 0.
 
+let set_ref_id t ~ref_id =
+  t.ref_id <- ref_id;
+  let addr, port = t.source in
+  let txt = Fmt.str "ntp:%a:%d:%04x" Ipaddr.V4.pp addr port ref_id in
+  let src = Logs.Src.create txt in
+  t.src <- src
+
 let get_buf_index t idx =
   (t.last_sample + (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) - t.n_samples + idx + 1)
   land 63
@@ -158,35 +172,20 @@ let get_runsbuf_index t idx =
   + 1)
   land 127
 
-let pp_timespec ppf t =
-  let d, ps = Ptime.(Span.to_d_ps (to_span t)) in
-  let tv_sec = 86400 * d in
-  let tv_sec = tv_sec + Int64.(to_int (div ps 1_000_000_000_000L)) in
-  let rem_ps = Int64.(rem ps 1_000_000_000_000L) in
-  let tv_nsec = Int64.(div rem_ps 1_000L) in
-  Fmt.pf ppf "{ @[<hov>.tv_sec= %d,@ .tv_nsec= %Ld@] }"
-    tv_sec tv_nsec
-
 let convert_to_intervals t ~off times_backs =
   let ts = t.sample_times.(t.last_sample) in
-  Fmt.epr ">>> %a\n%!" pp_timespec ts;
   for i = -t.runs_samples to t.n_samples - 1 do
     let diff = Ptime.diff t.sample_times.(get_runsbuf_index t i) ts in
-    Fmt.epr ">>> [%d:%d] <- %e\n%!" i (get_runsbuf_index t i) (Ptime.Span.to_float_s diff);
     Float.Array.set times_backs (off + i) (Ptime.Span.to_float_s diff)
   done
 
 let get_t_coef =
   let coefs =
     [|
-       636.6;  31.6; 12.92;  8.61; 6.869
-     ; 5.959; 5.408; 5.041; 4.781; 4.587
-     ; 4.437; 4.318; 4.221; 4.140; 4.073
-     ; 4.015; 3.965; 3.922; 3.883; 3.850
-     ; 3.819; 3.792; 3.768; 3.745; 3.725
-     ; 3.707; 3.690; 3.674; 3.659; 3.646
-     ; 3.633; 3.622; 3.611; 3.601; 3.591
-     ; 3.582; 3.574; 3.566; 3.558; 3.551
+       636.6; 31.6; 12.92; 8.61; 6.869; 5.959; 5.408; 5.041; 4.781; 4.587; 4.437
+     ; 4.318; 4.221; 4.140; 4.073; 4.015; 3.965; 3.922; 3.883; 3.850; 3.819
+     ; 3.792; 3.768; 3.745; 3.725; 3.707; 3.690; 3.674; 3.659; 3.646; 3.633
+     ; 3.622; 3.611; 3.601; 3.591; 3.582; 3.574; 3.566; 3.558; 3.551
     |]
   in
   fun dof -> if dof <= 40 then coefs.(dof - 1) else 3.5
@@ -318,9 +317,6 @@ let regression local t =
       done;
       for i = 0 to t.n_samples - 1 do
         let j = get_buf_index t i in
-        Fmt.epr ">>> 0.5 * [%d]%e + [%d]%e\n%!"
-          (get_runsbuf_index t i) (Float.Array.get t.peer_delays (get_runsbuf_index t i))
-          j (Float.Array.get t.peer_dispersions j);
         let value =
           (0.5 *. Float.Array.get t.peer_delays (get_runsbuf_index t i))
           +. Float.Array.get t.peer_dispersions j
@@ -330,28 +326,18 @@ let regression local t =
           min_distance := Float.Array.get peer_distances i
       done;
       let precision = Local.precision_as_quantum local in
-      Fmt.epr ">>> precision: %e\n%!" precision;
       let median_distance = Regress.find_median peer_distances t.n_samples in
-      Fmt.epr ">>> peer_distances[0]= %e\n%!" (Float.Array.get peer_distances 0);
-      Fmt.epr ">>> n_samples= %d\n%!" t.n_samples;
-      Fmt.epr ">>> median: %e\n%!" median_distance;
       let sd = (median_distance -. !min_distance) /. 0.7 in
-      Fmt.epr ">>> sd = (%e - %e) / %e = %e\n%!" median_distance !min_distance _SD_TO_DIST_RATIO sd;
       let sd = clamp ~min:precision ~max:!min_distance sd in
-      Fmt.epr ">>> sd = %e\n%!" sd;
       min_distance := !min_distance +. precision;
-      Fmt.epr ">>> min_distance: %e\n%!" !min_distance;
       let sd_weight = ref 1. in
       for i = 0 to t.n_samples - 1 do
         sd_weight := 1.;
         if Float.Array.get peer_distances i > !min_distance then begin
           sd_weight :=
             !sd_weight
-            +. ((Float.Array.get peer_distances i -. !min_distance) /. sd);
-          Fmt.epr ">>> sd_weight += ([%d]%e - %e) / %e\n%!"
-            i (Float.Array.get peer_distances i) !min_distance sd;
+            +. ((Float.Array.get peer_distances i -. !min_distance) /. sd)
         end;
-        Fmt.epr ">>> sd_weight: %e\n%!" !sd_weight;
         Float.Array.set weights i (!sd_weight *. !sd_weight)
       done;
       correct_asymmetry t times_back offsets
@@ -381,10 +367,8 @@ let regression local t =
       t.std_dev <- Float.max _MIN_STDDEV (sqrt est_var);
       t.nruns <- nruns;
       t.skew <- clamp ~min:_MIN_SKEW ~max:_MAX_SKEW t.skew;
-      Log.debug (fun m ->
-          m
-            "off=%e freq=%e skew=%e n=%d best-start=%d runs=%d asymmetry=%f \
-             asymmetry-run=%d"
+      Logs.debug ~src:t.src (fun m ->
+          m "off=%e freq=%e skew=%e n=%d bs=%d runs=%d asym=%f arun=%d"
             t.estimated_offset t.estimated_frequency t.skew t.n_samples
             best_start t.nruns t.asymmetry t.asymmetry_run);
       let times_back_start = t.runs_samples + best_start in
@@ -476,12 +460,9 @@ let get_delay_test_data t sample_time =
 let _MIN_SAMPLES_FOR_REGRESS = 3
 
 let get_predict_offset t w =
-  if t.n_samples < _MIN_SAMPLES_FOR_REGRESS
-  then
-    if t.n_samples > 0
-    then Float.Array.get t.offsets t.last_sample
-    else 0.0
+  if t.n_samples < _MIN_SAMPLES_FOR_REGRESS then
+    if t.n_samples > 0 then Float.Array.get t.offsets t.last_sample else 0.0
   else
     let elapsed = Ptime.(Span.sub (to_span w) t.offset_time) in
     let elapsed = Ptime.Span.to_float_s elapsed in
-    t.estimated_offset +. elapsed *. t.estimated_frequency
+    t.estimated_offset +. (elapsed *. t.estimated_frequency)

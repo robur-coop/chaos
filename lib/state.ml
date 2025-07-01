@@ -37,8 +37,8 @@ and t = {
   ; mutable number_of_roundtrips: int
   ; mutable remote_poll: int option
         (* Log2 of server polling interval (recovered from received packets) *)
-  ; stats : Stats.t
-  ; local : Local.t
+  ; stats: Stats.t
+  ; local: Local.t
 }
 
 let pp_error ppf = function
@@ -122,7 +122,8 @@ let is_time_offset_sane ts offset =
     t >= 0.0 && t < Float.of_int (0x7fffffff - _MIN_ENDOFTIME_DISTANCE)
     (* NOTE(dinosaure): we should check larger value like [1 << 32] as the
         maximum. *)
-  end else false
+  end
+  else false
 
 let check_delay_ratio t sample_time delay =
   if 0.0 (* TODO(dinosaure): [t.max_delay_ratio] *) < 1. then true
@@ -153,39 +154,56 @@ let check_delay_dev_ratio t sample_time offset delay =
         let error_in_estimate = offset +. predicted_offset in
         Float.abs error_in_estimate -. delta > max_delta
 
-let analyze t ~t1 ~t4 pkt =
+let to_sample t (t1, t4) pkt =
   let remote_rx = Option.get pkt.Packet.rx_ts in
   let remote_tx = Option.get pkt.Packet.tx_ts in
-  let remote_avg, remote_interval = average_and_diff ~earlier:remote_rx ~later:remote_tx in
+  let remote_avg, remote_interval =
+    average_and_diff ~earlier:remote_rx ~later:remote_tx
+  in
   let local_rx = t4 in
   let local_tx = t1 in
-  let local_avg, local_interval = average_and_diff ~earlier:local_rx ~later:local_rx in
+  let local_avg, local_interval =
+    average_and_diff ~earlier:local_rx ~later:local_rx
+  in
   let root_delay = pkt.Packet.root_delay in
   let root_dispersion = pkt.Packet.root_dispersion in
-  let response_time = Float.abs Ptime.(Span.to_float_s (diff remote_tx remote_rx)) in
-  let precision = Local.precision_as_quantum t.local +. log2_to_double pkt.Packet.precision in
-  let peer_delay = Float.abs Ptime.Span.(to_float_s (sub local_interval remote_interval)) in
+  let response_time =
+    Float.abs Ptime.(Span.to_float_s (diff remote_tx remote_rx))
+  in
+  let precision =
+    Local.precision_as_quantum t.local +. log2_to_double pkt.Packet.precision
+  in
+  let peer_delay =
+    Float.abs Ptime.Span.(to_float_s (sub local_interval remote_interval))
+  in
   let peer_delay = if peer_delay < precision then precision else peer_delay in
   let offset = Ptime.(Span.to_float_s (diff remote_avg local_avg)) in
   let time = local_avg in
   let src_freq_lo, src_freq_hi = Stats.get_frequency_range t.stats in
   let skew = (src_freq_hi -. src_freq_lo) /. 2. in
-  let peer_dispersion = precision +. (skew *. Float.abs (Ptime.Span.to_float_s local_interval)) in
+  let peer_dispersion =
+    precision +. (skew *. Float.abs (Ptime.Span.to_float_s local_interval))
+  in
   let sample =
-    { Sample.time
+    {
+      Sample.time
     ; offset
     ; peer_delay
     ; peer_dispersion
     ; root_delay
-    ; root_dispersion } in
-  Logs.debug ~src:t.src (fun m -> m "%a" Sample.pp sample);
+    ; root_dispersion
+    }
+  in
   let testA =
     sample.peer_delay -. sample.peer_dispersion <= 3.0 (* max delay *)
     && precision <= 3.0 (* max delay *)
     && is_time_offset_sane sample.time sample.offset
-    && not (response_time > _MAX_SERVER_INTERVAL) in
+    && not (response_time > _MAX_SERVER_INTERVAL)
+  in
   let testB = check_delay_ratio t sample.time sample.peer_delay in
-  let testC = check_delay_dev_ratio t sample.time sample.offset sample.peer_delay in
+  let testC =
+    check_delay_dev_ratio t sample.time sample.offset sample.peer_delay
+  in
   if testA && testB && testC then Some sample else None
 
 let valid_nonce ~org ts =
@@ -204,16 +222,29 @@ let record_t4 _trigger t (rx, tx) =
   | Tx_sent { t1 }, Ok (t4, pkt) -> begin
       match pkt.Packet.org_ts with
       | Some org when valid_nonce ~org t1 ->
+          Logs.debug ~src:t.src (fun m -> m "%a" Packet.pp_meta pkt);
+          Logs.debug ~src:t.src (fun m -> m "%a" Packet.pp pkt);
+          Stats.set_ref_id t.stats ~ref_id:pkt.Packet.ref_id;
           t.remote_poll <- Some pkt.Packet.poll;
           t.number_of_roundtrips <- t.number_of_roundtrips + 1;
-          let osample = analyze t ~t1 ~t4 pkt in
+          let sample = to_sample t (t1, t4) pkt in
           let fn sample =
-            let estimated_offset = Stats.get_predict_offset t.stats sample.Sample.time in
-            let error_in_estimate = Float.abs (Float.neg sample.offset -. estimated_offset) in
-            Logs.debug ~src:t.src (fun m -> m "estimated offset: %f, error in estimate: %f" estimated_offset error_in_estimate); 
+            let estimated_offset =
+              Stats.get_predict_offset t.stats sample.Sample.time
+            in
+            let error_in_estimate =
+              Float.abs (Float.neg sample.offset -. estimated_offset)
+            in
+            Logs.debug ~src:t.src (fun m ->
+                m "src=%a:%d ts=%.09f offset=%e delay=%e disp=%e" Ipaddr.V4.pp
+                  t.dst t.port
+                  Ptime.(Span.to_float_s (to_span sample.time))
+                  (Float.neg sample.offset) sample.root_delay
+                  sample.root_dispersion);
             Stats.accumulate t.stats sample;
-            Stats.regression t.local t.stats in
-          Option.iter fn osample;
+            Stats.regression t.local t.stats
+          in
+          Option.iter fn sample;
           t.state <- End_of_round_trip
       | Some org_ts ->
           Logs.warn ~src:t.src (fun m ->
@@ -244,7 +275,6 @@ let record_t4 _trigger t (rx, tx) =
           m "Unexpected exception: %s" (Printexc.to_string exn))
 
 let new_round_trip trigger t () =
-  Logs.debug ~src:t.src (fun m -> m "Start a new round trip");
   match t.state with
   | Invalid _ -> ()
   | Sleep { sleeper; ns= _ } ->
@@ -262,7 +292,7 @@ let new_round_trip trigger t () =
           ; precision= 32 (* Don't reveal local time or state of the clock *)
           ; root_delay= 0.
           ; root_dispersion= 0.
-          ; refid= 0l
+          ; ref_id= 0
           ; ref_ts= None
           ; org_ts= None
           ; rx_ts= None
@@ -286,7 +316,6 @@ let new_round_trip trigger t () =
       invalid_transition ~state:"new_round_trip" t
 
 let handle t =
-  Logs.debug ~src:t.src (fun m -> m "Update %a:%d" Ipaddr.V4.pp t.dst t.port);
   match t.state with
   | Invalid err -> `Error err
   | New_round_trip { port; pkt; send; recv } -> `Send (port, pkt, send, recv)
@@ -307,7 +336,7 @@ let make ?(port = 123) ~local dst =
     ; precision= 32 (* Don't reveal local time or state of the clock *)
     ; root_delay= 0.
     ; root_dispersion= 0.
-    ; refid= 0l
+    ; ref_id= 0
     ; ref_ts= None
     ; org_ts= None
     ; rx_ts= None
@@ -322,7 +351,7 @@ let make ?(port = 123) ~local dst =
   let recv = { src= dst; port= src_port; comp } in
   let state = New_round_trip { port= src_port; pkt; send; recv } in
   let src = Logs.Src.create (Fmt.str "ntp:%a:%d" Ipaddr.V4.pp dst port) in
-  let stats = Stats.make 0 in
+  let stats = Stats.make (dst, port) in
   let t =
     {
       src

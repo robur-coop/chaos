@@ -52,42 +52,40 @@ static int n_runs_from_residuals(double *resid, int n) {
 /* Return a boolean indicating whether we had enough points for
    regression */
 
-int
-RGR_FindBestRegression 
-(double *x,                     /* independent variable */
- double *y,                     /* measured data */
- double *w,                     /* weightings (large => data
-                                   less reliable) */
- 
- int n,                         /* number of data points */
- int m,                         /* number of extra samples in x and y arrays
-                                   (negative index) which can be used to
-                                   extend runs test */
- int min_samples,               /* minimum number of samples to be kept after
-                                   changing the starting index to pass the runs
-                                   test */
+int RGR_FindBestRegression(
+    double *x, /* independent variable */
+    double *y, /* measured data */
+    double *w, /* weightings (large => data
+                  less reliable) */
 
- /* And now the results */
+    int n,           /* number of data points */
+    int m,           /* number of extra samples in x and y arrays
+                        (negative index) which can be used to
+                        extend runs test */
+    int min_samples, /* minimum number of samples to be kept after
+                        changing the starting index to pass the runs
+                        test */
 
- double *b0,                    /* estimated y axis intercept */
- double *b1,                    /* estimated slope */
- double *s2,                    /* estimated variance of data points */
- 
- double *sb0,                   /* estimated standard deviation of
-                                   intercept */
- double *sb1,                   /* estimated standard deviation of
-                                   slope */
+    /* And now the results */
 
- int *new_start,                /* the new starting index to make the
-                                   residuals pass the two tests */
- 
- int *n_runs,                   /* number of runs amongst the residuals */
+    double *b0, /* estimated y axis intercept */
+    double *b1, /* estimated slope */
+    double *s2, /* estimated variance of data points */
 
- int *dof                       /* degrees of freedom in statistics (needed
-                                   to get confidence intervals later) */
+    double *sb0, /* estimated standard deviation of
+                    intercept */
+    double *sb1, /* estimated standard deviation of
+                    slope */
 
-)
-{
+    int *new_start, /* the new starting index to make the
+                       residuals pass the two tests */
+
+    int *n_runs, /* number of runs amongst the residuals */
+
+    int *dof /* degrees of freedom in statistics (needed
+                to get confidence intervals later) */
+
+) {
   double P, Q, U, V, W; /* total */
   double resid[MAX_POINTS * REGRESS_RUNS_RATIO];
   double ss;
@@ -97,7 +95,8 @@ RGR_FindBestRegression
   int i;
 
   assert(n <= MAX_POINTS && m >= 0);
-  assert(n * REGRESS_RUNS_RATIO < sizeof (critical_runs) / sizeof (critical_runs[0]));
+  assert(n * REGRESS_RUNS_RATIO <
+         sizeof(critical_runs) / sizeof(critical_runs[0]));
 
   if (n < MIN_SAMPLES_FOR_REGRESS) {
     return 0;
@@ -107,19 +106,19 @@ RGR_FindBestRegression
   do {
 
     W = U = 0;
-    for (i=start; i<n; i++) {
-      U += x[i]        / w[i];
-      W += 1.0         / w[i];
+    for (i = start; i < n; i++) {
+      U += x[i] / w[i];
+      W += 1.0 / w[i];
     }
 
     u = U / W;
 
     P = Q = V = 0.0;
-    for (i=start; i<n; i++) {
+    for (i = start; i < n; i++) {
       ui = x[i] - u;
-      P += y[i]        / w[i];
-      Q += y[i] * ui   / w[i];
-      V += ui   * ui   / w[i];
+      P += y[i] / w[i];
+      Q += y[i] * ui / w[i];
+      V += ui * ui / w[i];
     }
 
     b = Q / V;
@@ -130,16 +129,15 @@ RGR_FindBestRegression
     if (resid_start < -m)
       resid_start = -m;
 
-    for (i=resid_start; i<n; i++) {
-      resid[i - resid_start] = y[i] - a - b*x[i];
+    for (i = resid_start; i < n; i++) {
+      resid[i - resid_start] = y[i] - a - b * x[i];
     }
 
     /* Count number of runs */
-    nruns = n_runs_from_residuals(resid, n - resid_start); 
+    nruns = n_runs_from_residuals(resid, n - resid_start);
 
     if (nruns > critical_runs[n - resid_start] ||
-        n - start <= MIN_SAMPLES_FOR_REGRESS ||
-        n - start <= min_samples) {
+        n - start <= MIN_SAMPLES_FOR_REGRESS || n - start <= min_samples) {
       if (start != resid_start) {
         /* Ignore extra samples in returned nruns */
         nruns = n_runs_from_residuals(resid + (start - resid_start), n - start);
@@ -157,8 +155,8 @@ RGR_FindBestRegression
   *b0 = a;
 
   ss = 0.0;
-  for (i=start; i<n; i++) {
-    ss += resid[i - resid_start]*resid[i - resid_start] / w[i];
+  for (i = start; i < n; i++) {
+    ss += resid[i - resid_start] * resid[i - resid_start] / w[i];
   }
 
   npoints = n - start;
@@ -166,14 +164,13 @@ RGR_FindBestRegression
   *sb1 = sqrt(ss / V);
   aa = u * (*sb1);
   *sb0 = sqrt((ss / W) + (aa * aa));
-  *s2 = ss * (double) npoints / W;
+  *s2 = ss * (double)npoints / W;
 
   *new_start = start;
   *dof = npoints - 2;
   *n_runs = nruns;
 
   return 1;
-
 }
 
 /* ================================================== */
@@ -358,28 +355,16 @@ int regress_find_best_regression(int runs_samples, int n_samples,
                                  int min_samples, value times_back,
                                  value offsets, value weights, value est,
                                  value vres) {
-  double est_intercept = 0.0, est_slope= 0.0, est_var = 0.0, est_intercept_sd = 0.0, est_slope_sd = 0.0;
+  double est_intercept = 0.0, est_slope = 0.0, est_var = 0.0,
+         est_intercept_sd = 0.0, est_slope_sd = 0.0;
   int32_t best_start = 0, nruns = 0, degrees_of_freedom = 0;
   int regression_ok = 0;
-
-  for (int x = 0; x < n_samples; x++) {
-    printf("times_back[%d]= %e\n", x, ((double *)times_back)[runs_samples+x]);
-    printf("offsets[%d]= %e\n", x, ((double *)offsets)[runs_samples+x]);
-    printf("weights[%d]= %e\n", x, ((double *)weights)[x]);
-  }
 
   regression_ok = RGR_FindBestRegression(
       (double *)times_back + runs_samples, (double *)offsets + runs_samples,
       (double *)weights, n_samples, runs_samples, min_samples, &est_intercept,
       &est_slope, &est_var, &est_intercept_sd, &est_slope_sd, &best_start,
       &nruns, &degrees_of_freedom);
-  printf("regression ok: %d\n", regression_ok);
-  printf("est_intercept: %e\n", est_intercept);
-  printf("est_slope: %e\n", est_slope);
-  printf("est_var: %e\n", est_var);
-  printf("est_intercept_sd: %e\n", est_intercept_sd);
-  printf("est_slope_sd: %e\n", est_slope_sd);
-  fflush(stdout);
   Store_double_flat_field(est, 0, est_intercept);
   Store_double_flat_field(est, 1, est_slope);
   Store_double_flat_field(est, 2, est_var);

@@ -16,16 +16,28 @@ type t = {
   ; root_dispersion: float
 }
 
-let to_timespec t =
-   let d, ps = Ptime.(Span.to_d_ps (to_span t)) in
-   let tv_sec = 86400 * d in
-   let tv_sec = tv_sec + Int64.(to_int (div ps 1_000_000_000_000L)) in
-   let rem_psec = Int64.(rem ps 1_000_000_000_000L) in
-   let tv_nsec = Int64.(div rem_psec 1_000L) in
-   tv_sec, tv_nsec
+let ps_per_ns = 1_000L
+let ps_per_s = 1_000_000_000_000L
 
-let pp ppf t =
-   let d, ps = Ptime.(Span.to_d_ps (to_span t.time)) in
-   let tv_sec, tv_nsec = to_timespec t.time in
-   Fmt.pf ppf "@[<hov>(%d, %Ld)@\n{ .tv_sec= %d, .tv_nsec= %Ld }@\n{ .offset= %e, .peer_delay= %e, .peer_dispersion= %e, .root_delay= %e, .root_dispersion= %e }@]"
-     d ps tv_sec tv_nsec t.offset t.peer_delay t.peer_dispersion t.root_delay t.root_dispersion
+let to_timespec t =
+  let d, ps = Ptime.(Span.to_d_ps (to_span t)) in
+  let tv_sec = 86400 * d in
+  let tv_sec = tv_sec + Int64.(to_int (div ps ps_per_s)) in
+  let rem_psec = Int64.(rem ps ps_per_s) in
+  let tv_nsec = Int64.(div rem_psec ps_per_ns) in
+  (tv_sec, tv_nsec)
+
+let pp_like_c ppf t =
+  let tv_sec, tv_nsec = to_timespec t.time in
+  Fmt.pf ppf
+    "{ .time= { .tv_sec= %d, .tv_nsec= %Ld }, .offset= %e, .peer_delay= %e, \
+     .peer_dispersion= %e, .root_delay= %e, .root_dispersion= %e }"
+    tv_sec tv_nsec t.offset t.peer_delay t.peer_dispersion t.root_delay
+    t.root_dispersion
+
+let pp_like_ocaml ppf t =
+  let d, ps = Ptime.(Span.to_d_ps (to_span t.time)) in
+  Fmt.pf ppf
+    "{ time= Ptime.unsafe_of_d_ps (%d, %LdL); offset= %e; peer_delay= %e; \
+     peer_dispersion= %e; root_delay= %e; root_dispersion= %e }"
+    d ps t.offset t.peer_delay t.peer_dispersion t.root_delay t.root_dispersion

@@ -57,12 +57,26 @@ type t = {
   ; precision: int
   ; root_delay: float
   ; root_dispersion: float
-  ; refid: int32
+  ; ref_id: int
   ; ref_ts: Ptime.t option
   ; org_ts: Ptime.t option
   ; rx_ts: Ptime.t option
   ; tx_ts: Ptime.t option
 }
+
+let pp_meta ppf t =
+  Fmt.pf ppf
+    "lvm=%o stratum=%d poll=%d prec=%d root_delay=%.9f root_disp=%.9f \
+     ref_id=%04x"
+    t.flags t.stratum t.poll t.precision t.root_delay t.root_dispersion t.ref_id
+
+let to_sec = function
+  | None -> 0.
+  | Some value -> Ptime.(Span.to_float_s (to_span value))
+
+let pp ppf t =
+  Fmt.pf ppf "reference=%.9f origin=%.9f receive=%.9f transmit=%.9f"
+    (to_sec t.ref_ts) (to_sec t.org_ts) (to_sec t.rx_ts) (to_sec t.tx_ts)
 
 let ptime_of_buf buf ~off = ptime_of_int64 (String.get_int64_be buf off)
 
@@ -78,19 +92,6 @@ let ptime_to_string = function
       let buf = Bytes.create 8 in
       let v = ptime_to_int64 t in
       Bytes.set_int64_be buf 0 v; Bytes.unsafe_to_string buf
-
-let pp ppf pkt =
-  let pp ppf = function
-    | None -> Fmt.string ppf "NULL"
-    | Some v -> Ptime.pp ppf v
-  in
-  Fmt.pf ppf
-    "{ @[<hov>flags= %02x;@ stratum= %d;@ poll= %02x;@ precision= %02x;@ \
-     root_delay= %f;@ root_dispersion= %f;@ refid= %ld;@ reference_ts= %a;@ \
-     origin_ts= %a;@ recv_ts= %a;@ trans_ts= %a;@] }"
-    pkt.flags pkt.stratum pkt.poll pkt.precision pkt.root_delay
-    pkt.root_dispersion pkt.refid pp pkt.ref_ts pp pkt.org_ts pp pkt.rx_ts pp
-    pkt.tx_ts
 
 let flags_to_leap v =
   match v lsr 6 with
@@ -137,7 +138,8 @@ let decode ?nonce str =
   let root_delay = float_of_int32 root_delay in
   let root_dispersion = String.get_int32_be str 8 in
   let root_dispersion = float_of_int32 root_dispersion in
-  let refid = String.get_int32_be str 12 in
+  let ref_id = Int32.unsigned_to_int (String.get_int32_be str 12) in
+  let ref_id = Option.get ref_id in
   let ref_ts = ptime_of_buf str ~off:16 in
   let org_ts = ptime_of_buf str ~off:24 in
   let rx_ts = ptime_of_buf str ~off:32 in
@@ -163,7 +165,7 @@ let decode ?nonce str =
     ; precision
     ; root_delay
     ; root_dispersion
-    ; refid
+    ; ref_id
     ; ref_ts
     ; org_ts
     ; rx_ts
@@ -178,7 +180,7 @@ let to_string pkt =
   Bytes.set_uint8 buf 3 pkt.precision;
   Bytes.set_int32_be buf 4 (float_to_int32 pkt.root_delay);
   Bytes.set_int32_be buf 8 (float_to_int32 pkt.root_dispersion);
-  Bytes.set_int32_be buf 12 pkt.refid;
+  Bytes.set_int32_be buf 12 (Int32.of_int pkt.ref_id);
   ptime_to_buf buf ~off:16 pkt.ref_ts;
   ptime_to_buf buf ~off:24 pkt.org_ts;
   ptime_to_buf buf ~off:32 pkt.rx_ts;
@@ -205,7 +207,7 @@ let encode_into ~now pkt bstr =
   SBstr.set_uint8 bstr 3 pkt.precision;
   SBstr.set_int32_be bstr 4 (float_to_int32 pkt.root_delay);
   SBstr.set_int32_be bstr 8 (float_to_int32 pkt.root_dispersion);
-  SBstr.set_int32_be bstr 12 pkt.refid;
+  SBstr.set_int32_be bstr 12 (Int32.of_int pkt.ref_id);
   ptime_to_sbstr bstr ~off:16 pkt.ref_ts;
   ptime_to_sbstr bstr ~off:24 pkt.org_ts;
   ptime_to_sbstr bstr ~off:32 pkt.rx_ts;
