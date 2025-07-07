@@ -174,7 +174,11 @@ let run udpv4 servers =
       | [] ->
           let prms = Hashtbl.to_seq_values actives in
           Seq.iter Miou.cancel prms; terminate sleepers
-      | servers -> Wk.sleep wk 1_000_000_000; go rxs servers
+      | servers ->
+          Logs.debug (fun m -> m "select source");
+          let _ = Chaos.Combine.select_source (Tscclock.ptime ()) servers in
+          Wk.sleep wk 1_000_000_000;
+          go rxs (List.rev servers)
     in
     go [] (List.map (Chaos.State.make ~local) servers)
   in

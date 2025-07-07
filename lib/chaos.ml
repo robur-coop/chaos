@@ -3,3 +3,4 @@ module State = State
 module Stats = Stats
 module Packet = Packet
 module Sample = Sample
+module Combine = Combine

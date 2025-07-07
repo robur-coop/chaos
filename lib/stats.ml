@@ -466,3 +466,102 @@ let get_predict_offset t w =
     let elapsed = Ptime.(Span.sub (to_span w) t.offset_time) in
     let elapsed = Ptime.Span.to_float_s elapsed in
     t.estimated_offset +. (elapsed *. t.estimated_frequency)
+
+let samples t = t.n_samples
+
+type info = {
+    lo_limit: float
+  ; hi_limit: float
+  ; root_distance: float
+  ; std_dev: float
+  ; first_sample_ago: float
+  ; last_sample_ago: float
+}
+
+let get_selection_data t now =
+  if t.n_samples <= 0 then None
+  else if t.regression_ok then begin
+    let i = get_runsbuf_index t t.best_single_sample in
+    let j = get_buf_index t t.best_single_sample in
+    let std_dev = t.std_dev in
+    let sample_elapsed =
+      Float.abs Ptime.(Span.to_float_s (diff now t.sample_times.(i)))
+    in
+    let offset =
+      Float.Array.get t.offsets i +. (sample_elapsed *. t.estimated_frequency)
+    in
+    let root_distance =
+      (0.5 *. Float.Array.get t.root_delays j)
+      +. Float.Array.get t.root_dispersions j
+      +. (sample_elapsed *. t.skew)
+    in
+    let offset_lo_limit = offset -. root_distance in
+    let offset_hi_limit = offset +. root_distance in
+    let i = get_runsbuf_index t 0 in
+    let first_sample_ago =
+      Ptime.(Span.to_float_s (diff now t.sample_times.(i)))
+    in
+    let i = get_runsbuf_index t (t.n_samples - 1) in
+    let last_sample_ago =
+      Ptime.(Span.to_float_s (diff now t.sample_times.(i)))
+    in
+    Logs.debug ~src:t.src (fun m ->
+        m "n=%d off=%f dist=%f sd=%f first_ago=%f last_ago=%f" t.n_samples
+          offset root_distance std_dev first_sample_ago last_sample_ago);
+    Some
+      {
+        lo_limit= offset_lo_limit
+      ; hi_limit= offset_hi_limit
+      ; root_distance
+      ; std_dev
+      ; first_sample_ago
+      ; last_sample_ago
+      }
+  end
+  else None
+
+type data = {
+    ref_time: Ptime.span
+  ; average_offset: float
+  ; offset_sd: float
+  ; frequency: float
+  ; frequency_sd: float
+  ; skew: float
+  ; root_delay: float
+  ; root_dispersion: float
+}
+
+let get_tracking_data t =
+  if t.n_samples <= 0 then Fmt.invalid_arg "Stats.get_tracking_data";
+  let i = get_runsbuf_index t t.best_single_sample in
+  let j = get_buf_index t t.best_single_sample in
+  let ref_time = t.offset_time in
+  let average_offset = t.estimated_offset in
+  let offset_sd = t.estimated_offset_sd in
+  let frequency = t.estimated_frequency in
+  let frequency_sd = t.estimated_frequency_sd in
+  let skew = t.skew in
+  let root_delay = Float.Array.get t.root_delays j in
+  let elapsed_sample =
+    Ptime.(
+      Span.to_float_s (Span.sub t.offset_time (to_span t.sample_times.(i))))
+  in
+  let root_dispersion =
+    Float.Array.get t.root_dispersions j
+    +. (t.skew *. elapsed_sample)
+    +. offset_sd
+  in
+  Logs.debug ~src:t.src (fun m ->
+      m "n=%d off=%f offsd=%f freq=%e freqsd=%e skew=%e delay=%f disp=%f"
+        t.n_samples average_offset offset_sd frequency frequency_sd skew
+        root_delay root_dispersion);
+  {
+    ref_time
+  ; average_offset
+  ; offset_sd
+  ; frequency
+  ; frequency_sd
+  ; skew
+  ; root_delay
+  ; root_dispersion
+  }

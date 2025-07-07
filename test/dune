@@ -1,4 +1,0 @@
-(executable
- (name test_regression)
- (modes native)
- (libraries chaos alcotest chaos.tscclock))

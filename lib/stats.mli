@@ -41,3 +41,31 @@ val get_predict_offset : t -> Ptime.t -> float
 (** [get_predict_offset t when] predicts the offset of the local clock relative
     to a given source at a given local {i cooked} time. Positive indicates local
     clock is {b fast} relative to reference. *)
+
+val samples : t -> int
+
+type info = {
+    lo_limit: float
+  ; hi_limit: float
+  ; root_distance: float
+  ; std_dev: float
+  ; first_sample_ago: float
+  ; last_sample_ago: float
+}
+(** Structure used to hold info for selecting between sources. *)
+
+val get_selection_data : t -> Ptime.t -> info option
+(** Get data needed for selection *)
+
+type data = {
+    ref_time: Ptime.span
+  ; average_offset: float
+  ; offset_sd: float
+  ; frequency: float
+  ; frequency_sd: float
+  ; skew: float
+  ; root_delay: float
+  ; root_dispersion: float
+}
+
+val get_tracking_data : t -> data

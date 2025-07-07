@@ -127,7 +127,7 @@ let float_to_int32 x =
     Int32.of_float (Float.ceil x)
 (* TODO(dinosaure): verify the result! *)
 
-let decode ?nonce str =
+let decode str =
   let ( let* ) = Result.bind in
   let* () = guard `Invalid_NTP_packet @@ fun () -> String.length str >= 48 in
   let flags = String.get_uint8 str 0 in
@@ -144,19 +144,6 @@ let decode ?nonce str =
   let org_ts = ptime_of_buf str ~off:24 in
   let rx_ts = ptime_of_buf str ~off:32 in
   let tx_ts = ptime_of_buf str ~off:40 in
-  let* () =
-    guard `Invalid_NTP_version @@ fun () -> flags_to_version flags == 4
-  in
-  let* () =
-    guard `Server_not_in_sync @@ fun () ->
-    Option.is_some rx_ts && Option.is_some tx_ts
-  in
-  let* () =
-    guard `Invalid_nonce @@ fun () ->
-    match nonce with
-    | None -> true
-    | Some nonce -> String.equal nonce (String.sub str 24 8)
-  in
   Ok
     {
       flags

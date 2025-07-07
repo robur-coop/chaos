@@ -1,8 +1,8 @@
 (library
  (name chaos)
- (modules chaos stats local sample state packet sched)
+ (modules chaos stats local sample state packet sched combine)
  (public_name chaos)
- (libraries mirage-crypto-rng slice.bstr ipaddr fmt ptime logs)
+ (libraries mirage-crypto-rng duration slice.bstr ipaddr fmt ptime logs)
  (foreign_stubs
   (language c)
   (names regress)))
