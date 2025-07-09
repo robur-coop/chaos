@@ -82,19 +82,18 @@ let score ~min_stratum sources =
   let fn = function
     | `Ok (source, info) as elt ->
         let open Stats in
-        let diff = State.stratum ~default:min_stratum source - min_stratum in
+        let diff = Source.stratum ~default:min_stratum source - min_stratum in
         let distance = info.root_distance +. (Float.of_int diff *. 1e-3) in
         let distance = distance +. 1e-4 in
         let score = 1.0 /. distance in
-        (score, 0, elt)
+        (score, elt)
     | (`Jittery _ | `Bad_distance _ | `No_stats _ | `Falseticker _) as elt ->
         let score = 1.0 in
-        let distant = 32 in
-        (score, distant, elt)
+        (score, elt)
   in
   let sources = List.map fn sources in
   let fn = function
-    | score, distant, elt ->
+    | score, elt ->
         let ipaddr, port =
           match elt with
           | `Ok (source, _)
@@ -102,10 +101,9 @@ let score ~min_stratum sources =
           | `Jittery source
           | `Bad_distance source
           | `No_stats source ->
-              State.server source
+              Source.server source
         in
-        Log.debug (fun m ->
-            m "%a:%d score=%f dist=%d" Ipaddr.V4.pp ipaddr port score distant)
+        Log.debug (fun m -> m "%a:%d score=%f" Ipaddr.V4.pp ipaddr port score)
   in
   List.iter fn sources; sources
 
@@ -129,8 +127,8 @@ let qualify ~now sources =
   let fn source =
     (* TODO(dinosaure):
        - verify the LEAP indicator from the last packet of the given source *)
-    if State.is_reachable source == false then incr unreachable_sources;
-    match Stats.get_selection_data (State.stats source) now with
+    if Source.is_reachable source == false then incr unreachable_sources;
+    match Stats.get_selection_data (Source.stats source) now with
     | Some info ->
         let info =
           if info.Stats.first_sample_ago < 2. *. info.Stats.last_sample_ago then
@@ -158,7 +156,7 @@ let qualify ~now sources =
         else if info.std_dev > _MAX_JITTER then `Jittery source
         else begin
           if
-            State.is_reachable source
+            Source.is_reachable source
             && !max_reach_sample_ago < info.first_sample_ago
           then max_reach_sample_ago := info.first_sample_ago;
           `Ok (source, info)
@@ -176,30 +174,105 @@ let find_minimum_stratum = function
       let fn acc elt =
         match (acc, elt) with
         | Some default, `Ok (source, _) ->
-            Some (Int.min default (State.stratum ~default source))
+            Some (Int.min default (Source.stratum ~default source))
         | None, `Ok (source, _) ->
-            let stratum = State.stratum ~default:Int.max_int source in
+            let stratum = Source.stratum ~default:Int.max_int source in
             if stratum == Int.max_int then None else Some stratum
         | acc, _ -> acc
       in
       List.fold_left fn None sources
 
-let select_source now sources =
+let square x = x *. x
+
+let combine (sel_idx, _sel_source, _sel_info, sel_data) sources =
+  let sum_offset_weight = ref 0.
+  and sum_offset = ref 0.
+  and sum2_offset_sd = ref 0.
+  and sum_frequency_weight = ref 0.
+  and sum_frequency = ref 0.
+  and inv_sum2_frequency_sd = ref 0.
+  and inv_sum2_skew = ref 0. in
+  let fn idx (_score, elt) =
+    if idx != sel_idx then
+      match elt with
+      | `Ok (source, info) ->
+          let open Stats in
+          let data = Stats.get_tracking_data (Source.stats source) in
+          let elapsed =
+            Ptime.(Span.to_float_s (diff sel_data.ref_time data.ref_time))
+          in
+          let offset = data.offset +. (elapsed *. data.frequency) in
+          let offset_sd = data.offset_sd +. (elapsed *. data.frequency_sd) in
+          let offset_weight = 1.0 /. info.root_distance in
+          let frequency_weight = 1.0 /. square data.frequency_sd in
+          sum_offset_weight := !sum_offset_weight +. offset_weight;
+          sum_offset := !sum_offset +. (offset_weight *. offset);
+          sum2_offset_sd :=
+            !sum2_offset_sd
+            +. offset_weight
+               *. (square offset_sd +. square (offset +. sel_data.offset));
+          sum_frequency_weight := !sum_frequency_weight +. frequency_weight;
+          sum_frequency := !sum_frequency +. (frequency_weight *. data.frequency);
+          inv_sum2_frequency_sd :=
+            !inv_sum2_frequency_sd +. (1.0 /. square data.frequency_sd);
+          inv_sum2_skew := !inv_sum2_skew +. (1.0 /. square data.skew);
+          let addr, port = Source.server source in
+          Log.debug (fun m ->
+              m
+                "combining %a:%d oweight=%e offset=%e osd=%e fweight=%e \
+                 freq=%e fsd=%e skew=%e"
+                Ipaddr.V4.pp addr port offset_weight data.offset data.offset_sd
+                frequency_weight data.frequency data.frequency_sd data.skew)
+      | _ -> ()
+  in
+  List.iteri fn sources;
+  let ref_time = sel_data.ref_time in
+  let offset = !sum_offset /. !sum_offset_weight in
+  let offset_sd = Float.sqrt (!sum2_offset_sd /. !sum_offset_weight) in
+  let frequency = !sum_frequency /. !sum_frequency_weight in
+  let frequency_sd = 1.0 /. Float.sqrt !inv_sum2_frequency_sd in
+  let skew = 1.0 /. Float.sqrt !inv_sum2_skew in
+  let root_delay = sel_data.root_delay in
+  let root_dispersion = sel_data.root_dispersion in
+  Log.debug (fun m ->
+      m "combined result offset=%e osd=%e freq=%e fsd=%e skew=%e" offset
+        offset_sd frequency frequency_sd skew);
+  {
+    Stats.ref_time
+  ; offset
+  ; offset_sd
+  ; frequency
+  ; frequency_sd
+  ; skew
+  ; root_delay
+  ; root_dispersion
+  }
+
+let select now sources =
   let ( let* ) = Option.bind in
   let sources = qualify ~now sources in
   let* lo, hi = search_interval sources in
-  Logs.debug (fun m -> m "Interval lo:%f hi:%f" lo hi);
+  Logs.debug (fun m -> m "interval lo:%f hi:%f" lo hi);
   (* TODO(dinosaure): filter sources against orphan stratum *)
   let sources = in_interval ~lo ~hi sources in
   let* min_stratum = find_minimum_stratum sources in
   let sources = score ~min_stratum sources in
-  let* best_source =
-    let fn (score', source') = function
-      | score, _distant, `Ok (source, _info) when score > score' ->
-          (score, Some source)
-      | _ -> (score', source')
+  let selected_sources = ref 0 in
+  let best_idx_src, _best_score, best_src =
+    let fn (idx, score', source') = function
+      | score, `Ok (source, info) when score > score' ->
+          incr selected_sources;
+          (succ idx, score, Some (source, info))
+      | _, `Ok _ ->
+          incr selected_sources;
+          (succ idx, score', source')
+      | _ -> (succ idx, score', source')
     in
-    List.fold_left fn (0.0, None) sources |> snd
+    List.fold_left fn (0, 0.0, None) sources
   in
-  let _data = Stats.get_tracking_data (State.stats best_source) in
-  None
+  Log.debug (fun m -> m "%d selected source(s)" !selected_sources);
+  let* best_src, best_src_info = best_src in
+  let best_src_data = Stats.get_tracking_data (Source.stats best_src) in
+  let best = (best_idx_src, best_src, best_src_info, best_src_data) in
+  if !selected_sources > 1 then Option.some (combine best sources)
+  else Some best_src_data

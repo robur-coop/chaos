@@ -19,7 +19,7 @@ module Reachability : sig
   val pp : t Fmt.t
 end
 
-val make : ?port:int -> local:Local.t -> Ipaddr.V4.t -> t
+val make : ?port:int -> Ipaddr.V4.t -> t
 val server : t -> Ipaddr.V4.t * int
 val handle : t -> event
 val stats : t -> Stats.t

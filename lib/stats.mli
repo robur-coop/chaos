@@ -21,7 +21,7 @@ val accumulate : t -> Sample.t -> unit
 (** [accumulate t sample] accumulates a single sample into the statistics
     handler. *)
 
-val regression : Local.t -> t -> unit
+val regression : t -> unit
 (** [regression t] runs the linear regression operation on the data. It finds
     the set of most recent samples that give the tightest confidence interval
     for the frequency, and truncates the register down to that number of
@@ -58,8 +58,8 @@ val get_selection_data : t -> Ptime.t -> info option
 (** Get data needed for selection *)
 
 type data = {
-    ref_time: Ptime.span
-  ; average_offset: float
+    ref_time: Ptime.t
+  ; offset: float
   ; offset_sd: float
   ; frequency: float
   ; frequency_sd: float
@@ -69,3 +69,4 @@ type data = {
 }
 
 val get_tracking_data : t -> data
+val slew_samples : t -> Ptime.t -> float -> float -> unit

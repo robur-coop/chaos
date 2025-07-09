@@ -51,7 +51,7 @@ type t = {
         (* The index of the sample with minimum delay in [peer_delays] *)
   ; mutable estimated_offset: float
   ; mutable estimated_offset_sd: float
-  ; mutable offset_time: Ptime.span
+  ; mutable offset_time: Ptime.t
   ; mutable nruns: int
         (* Number of runs of the same sign amongst the residuals *)
   ; mutable asymmetry_run: int
@@ -119,7 +119,7 @@ let make ?(min_samples = 1) ?(max_samples = _MAX_SAMPLES) ?(min_delay = 0.)
   ; min_delay_sample= 0
   ; estimated_offset= 0.
   ; estimated_offset_sd= 0.
-  ; offset_time= Ptime.Span.zero
+  ; offset_time= Ptime.min
   ; nruns= 0
   ; asymmetry_run= 0
   ; asymmetry= 0.
@@ -147,7 +147,7 @@ let reset t =
   t.skew <- _WORST_CASE_FREQ_BOUND;
   t.estimated_offset <- 0.;
   t.estimated_offset_sd <- _WORST_CASE_STDDEV_BOUND;
-  t.offset_time <- Ptime.Span.zero;
+  t.offset_time <- Ptime.min;
   t.std_dev <- _WORST_CASE_STDDEV_BOUND;
   t.nruns <- 0;
   t.asymmetry_run <- 0;
@@ -190,7 +190,7 @@ let get_t_coef =
   in
   fun dof -> if dof <= 40 then coefs.(dof - 1) else 3.5
 
-let clamp ~min:min_ ~max:max_ value = Float.max (Float.min value max_) min_
+let clamp ~min:mi ~max:ma value = Float.max (Float.min value ma) mi
 
 let min_round_trip_delay t =
   if t.fixed_min_delay > 0. then t.fixed_min_delay
@@ -302,7 +302,7 @@ let prune t new_oldest =
 (* This function runs the linear regression operation on the data. It finds the
    set of most recent samples that give the tightest confidence interval for the
    frequency, and truncates the register down to that number of samples. *)
-let regression local t =
+let regression t =
   let times_back = Float.Array.make (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) 0.0 in
   let offsets = Float.Array.make (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) 0.0 in
   let peer_distances = Float.Array.make _MAX_SAMPLES 0.0 in
@@ -325,7 +325,7 @@ let regression local t =
         if Float.Array.get peer_distances i < !min_distance then
           min_distance := Float.Array.get peer_distances i
       done;
-      let precision = Local.precision_as_quantum local in
+      let precision = Clock.precision_as_quantum () in
       let median_distance = Regress.find_median peer_distances t.n_samples in
       let sd = (median_distance -. !min_distance) /. 0.7 in
       let sd = clamp ~min:precision ~max:!min_distance sd in
@@ -362,7 +362,7 @@ let regression local t =
         clamp ~min:_MIN_SKEW ~max:_MAX_SKEW est_slope_sd;
       t.skew <- est_slope_sd *. get_t_coef degrees_of_freedom;
       t.estimated_offset <- est_intercept;
-      t.offset_time <- Ptime.to_span t.sample_times.(t.last_sample);
+      t.offset_time <- t.sample_times.(t.last_sample);
       t.estimated_offset_sd <- est_intercept_sd;
       t.std_dev <- Float.max _MIN_STDDEV (sqrt est_var);
       t.nruns <- nruns;
@@ -383,11 +383,11 @@ let regression local t =
       t.nruns <- 0;
       if t.n_samples > 0 then begin
         t.estimated_offset <- Float.Array.get t.offsets t.last_sample;
-        t.offset_time <- Ptime.to_span t.sample_times.(t.last_sample)
+        t.offset_time <- t.sample_times.(t.last_sample)
       end
       else begin
         t.estimated_offset <- 0.;
-        t.offset_time <- Ptime.Span.zero
+        t.offset_time <- Ptime.min
       end;
       find_best_sample_index t ~off:0 times_back
     end
@@ -447,7 +447,7 @@ let get_delay_test_data t sample_time =
   if t.n_samples < 6 then None
   else
     let last_sample_ago =
-      Ptime.(Span.to_float_s (Span.sub (to_span sample_time) t.offset_time))
+      Ptime.(Span.to_float_s (diff sample_time t.offset_time))
     in
     let predicted_offset =
       t.estimated_offset +. (last_sample_ago *. t.estimated_frequency)
@@ -463,7 +463,7 @@ let get_predict_offset t w =
   if t.n_samples < _MIN_SAMPLES_FOR_REGRESS then
     if t.n_samples > 0 then Float.Array.get t.offsets t.last_sample else 0.0
   else
-    let elapsed = Ptime.(Span.sub (to_span w) t.offset_time) in
+    let elapsed = Ptime.(diff w t.offset_time) in
     let elapsed = Ptime.Span.to_float_s elapsed in
     t.estimated_offset +. (elapsed *. t.estimated_frequency)
 
@@ -521,8 +521,8 @@ let get_selection_data t now =
   else None
 
 type data = {
-    ref_time: Ptime.span
-  ; average_offset: float
+    ref_time: Ptime.t
+  ; offset: float
   ; offset_sd: float
   ; frequency: float
   ; frequency_sd: float
@@ -536,15 +536,14 @@ let get_tracking_data t =
   let i = get_runsbuf_index t t.best_single_sample in
   let j = get_buf_index t t.best_single_sample in
   let ref_time = t.offset_time in
-  let average_offset = t.estimated_offset in
+  let offset = t.estimated_offset in
   let offset_sd = t.estimated_offset_sd in
   let frequency = t.estimated_frequency in
   let frequency_sd = t.estimated_frequency_sd in
   let skew = t.skew in
   let root_delay = Float.Array.get t.root_delays j in
   let elapsed_sample =
-    Ptime.(
-      Span.to_float_s (Span.sub t.offset_time (to_span t.sample_times.(i))))
+    Ptime.(Span.to_float_s (diff t.offset_time t.sample_times.(i)))
   in
   let root_dispersion =
     Float.Array.get t.root_dispersions j
@@ -553,11 +552,11 @@ let get_tracking_data t =
   in
   Logs.debug ~src:t.src (fun m ->
       m "n=%d off=%f offsd=%f freq=%e freqsd=%e skew=%e delay=%f disp=%f"
-        t.n_samples average_offset offset_sd frequency frequency_sd skew
-        root_delay root_dispersion);
+        t.n_samples offset offset_sd frequency frequency_sd skew root_delay
+        root_dispersion);
   {
     ref_time
-  ; average_offset
+  ; offset
   ; offset_sd
   ; frequency
   ; frequency_sd
@@ -565,3 +564,27 @@ let get_tracking_data t =
   ; root_delay
   ; root_dispersion
   }
+
+let adjust old now dfreq doffset =
+  let elapsed = Ptime.(Span.to_float_s (diff now old)) in
+  let delta = (elapsed *. dfreq) -. doffset in
+  let delta_span = Ptime.Span.of_float_s delta in
+  let delta_span = Option.get delta_span in
+  let result = Ptime.add_span old delta_span in
+  let result = Option.get result in
+  (result, delta)
+
+let slew_samples t now dfreq doffset =
+  if t.n_samples > 0 then begin
+    for m = -t.runs_samples to t.n_samples do
+      let i = get_runsbuf_index t m in
+      let sample = t.sample_times.(i) in
+      let new_sample, delta = adjust sample now dfreq doffset in
+      t.sample_times.(i) <- new_sample;
+      Float.Array.set t.offsets i (Float.Array.get t.offsets i +. delta)
+    done;
+    let offset_time, delta = adjust t.offset_time now dfreq doffset in
+    t.offset_time <- offset_time;
+    t.estimated_offset <- t.estimated_offset +. delta;
+    t.estimated_frequency <- (t.estimated_frequency -. dfreq) /. (1. -. dfreq)
+  end

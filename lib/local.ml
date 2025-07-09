@@ -31,11 +31,13 @@ let measure_clock_precision ~now () =
 let clamp ~min:min_ ~max:max_ value = Float.max (Float.min value max_) min_
 
 let make ?(max_freq_ppm = 500_000.0) ?precision_quantum now =
-  let precision_quantum = match precision_quantum with
+  let precision_quantum =
+    match precision_quantum with
     | Some value -> clamp ~min:1e-9 ~max:1. value
     | None ->
-      let precision_quantum = measure_clock_precision ~now () in
-      clamp ~min:1e-9 ~max:1. precision_quantum in
+        let precision_quantum = measure_clock_precision ~now () in
+        clamp ~min:1e-9 ~max:1. precision_quantum
+  in
   let precision_log = Float.(round (log precision_quantum /. log 2.)) in
   let precision_log = Float.to_int precision_log in
   assert (precision_log >= -30);

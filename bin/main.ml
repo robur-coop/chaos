@@ -32,7 +32,7 @@ module Wk : sig
   type t
 
   val create : unit -> t
-  val sleep : t -> int -> unit
+  val idle : t -> unit
   val interrupt : t -> unit
 end = struct
   type t = Miou.Trigger.t ref
@@ -40,21 +40,19 @@ end = struct
   let create () = ref (Miou.Trigger.create ())
 
   let cancel _trigger comp value =
-    ignore (Miou.Computation.try_return comp value)
+    assert (Miou.Computation.try_return comp value)
 
-  let sleep wk ns =
-    let tick = Miou.async @@ fun () -> Miou_solo5.sleep ns in
-    let comp = Miou.Computation.create () in
-    let proc = Miou.async @@ fun () -> Miou.Computation.await_exn comp in
-    wk := Miou.Trigger.create ();
-    assert (Miou.Trigger.on_signal !wk comp () cancel);
-    ignore (Miou.await_first [ tick; proc ])
+  let idle trigger =
+    let waiter = Miou.Computation.create () in
+    trigger := Miou.Trigger.create ();
+    assert (Miou.Trigger.on_signal !trigger waiter () cancel);
+    Miou.Computation.await_exn waiter
 
-  let interrupt wk = Miou.Trigger.signal !wk
+  let interrupt trigger = Miou.Trigger.signal !trigger
 end
 
 let when_ntpv4_is_received _trigger ts wk =
-  ts := Tscclock.now ();
+  ts := Chaos.Clock.read_cooked_time ();
   Wk.interrupt wk
 
 let new_listener orphans udpv4 actives wk port =
@@ -63,7 +61,7 @@ let new_listener orphans udpv4 actives wk port =
   | Some _ -> ()
   | None ->
       let trigger = Miou.Trigger.create () in
-      let ts = ref 0 in
+      let ts = ref Ptime.min in
       assert (Miou.Trigger.on_signal trigger ts wk when_ntpv4_is_received);
       let prm =
         Miou.async ~orphans @@ fun () ->
@@ -71,7 +69,7 @@ let new_listener orphans udpv4 actives wk port =
         let len, (peer, _peer_port) = UDPv4.recvfrom udpv4 ~port ~trigger buf in
         let str = Bytes.sub_string buf 0 len in
         match Chaos.Packet.decode str with
-        | Ok pkt -> `Packet (Tscclock.of_int_ns !ts, pkt, peer, port)
+        | Ok pkt -> `Packet (!ts, pkt, peer, port)
         | Error _ -> `Unknown port
       in
       Hashtbl.add actives port prm
@@ -83,8 +81,8 @@ let cancel_listener active_ports port prm =
   else Some prm
 
 let clean_up_listeners udpv4 orphans rxs actives wk =
-  let rxs = List.filter Chaos.State.rx_active rxs in
-  let active_ports = List.map Chaos.State.rx_port rxs in
+  let rxs = List.filter Chaos.Source.rx_active rxs in
+  let active_ports = List.map Chaos.Source.rx_port rxs in
   let active_ports = List.sort_uniq Int.compare active_ports in
   Hashtbl.filter_map_inplace (cancel_listener active_ports) actives;
   let new_ports = List.filter (Fun.negate (Hashtbl.mem actives)) active_ports in
@@ -96,7 +94,7 @@ let clean_up_listeners udpv4 orphans rxs actives wk =
         match Miou.await prm with
         | Ok (`Packet (ts, pkt, src, src_port)) ->
             Hashtbl.remove actives src_port;
-            List.iter (Chaos.State.rx_received ~src ~src_port ~ts pkt) rxs
+            List.iter (Chaos.Source.rx_received ~src ~src_port ~ts pkt) rxs
         | Ok (`Unknown port) -> Hashtbl.remove actives port
         | Error Miou.Cancelled -> ()
         | Error exn ->
@@ -108,13 +106,13 @@ let clean_up_listeners udpv4 orphans rxs actives wk =
 
 let rec step udpv4 wk sleepers rxs server =
   let open Miou_solo5_net in
-  match Chaos.State.handle server with
+  match Chaos.Source.handle server with
   | `Send (src_port, pkt, tx, rx) ->
-      let dst, port = Chaos.State.server server in
+      let dst, port = Chaos.Source.server server in
       let _ =
         Miou.async ~orphans:sleepers @@ fun () ->
         Miou_solo5.sleep 3_000_000_000;
-        Chaos.State.rx_timeout rx;
+        Chaos.Source.rx_timeout rx;
         Wk.interrupt wk
       in
       let ts = ref Ptime.min in
@@ -123,12 +121,12 @@ let rec step udpv4 wk sleepers rxs server =
             m "-> %a:%d %a" Ipaddr.V4.pp dst port
               (Ptime.pp_human ~frac_s:9 ())
               !ts);
-        Chaos.State.tx_sent tx !ts
+        Chaos.Source.tx_sent tx !ts
       and error _ =
         Logs.debug (fun m -> m "%a:%d unreachable" Ipaddr.V4.pp dst port);
-        Chaos.State.dst_unreachable tx
+        Chaos.Source.dst_unreachable tx
       in
-      let now () = Tscclock.ptime () in
+      let now () = Chaos.Clock.read_raw_time () in
       (* NOTE(dinosaure): [fn] is executed **after** the discovery
          of routes. When the new NTPv4 packet is sent, we have the most accurate
          time of transmission from the perspective of the unikernel. *)
@@ -143,7 +141,7 @@ let rec step udpv4 wk sleepers rxs server =
       let _ =
         Miou.async ~orphans:sleepers @@ fun () ->
         Miou_solo5.sleep ns;
-        Chaos.State.wake_up sleeper;
+        Chaos.Source.wake_up sleeper;
         Wk.interrupt wk
       in
       step udpv4 wk sleepers rxs server
@@ -151,9 +149,7 @@ let rec step udpv4 wk sleepers rxs server =
 let run udpv4 servers =
   let wk = Wk.create () in
   let actives = Hashtbl.create 0x10 in
-  let local = Chaos.Local.make Tscclock.now in
-  Logs.debug (fun m ->
-      m "precision: %e" (Chaos.Local.precision_as_quantum local));
+  let reference = Chaos.Reference.make () in
   let prm =
     Miou.async @@ fun () ->
     let sleepers = Miou.orphans () in
@@ -176,18 +172,22 @@ let run udpv4 servers =
           Seq.iter Miou.cancel prms; terminate sleepers
       | servers ->
           Logs.debug (fun m -> m "select source");
-          let _ = Chaos.Combine.select_source (Tscclock.ptime ()) servers in
-          Wk.sleep wk 1_000_000_000;
+          let now = Chaos.Clock.read_raw_time () in
+          (* TODO(dinosaure): for [now], get monotonic last event time *)
+          let data = Chaos.Select.select now servers in
+          let stratum (* TODO *) = 3 in
+          Option.iter (Chaos.Reference.update reference ~stratum) data;
+          Wk.idle wk;
           go rxs (List.rev servers)
     in
-    go [] (List.map (Chaos.State.make ~local) servers)
+    go [] (List.map Chaos.Source.make servers)
   in
   Miou.await_exn prm
 
 let run _ cidr gateway servers =
   Miou_solo5.(run [ Miou_solo5_net.stackv4 ~name:"service" ?gateway cidr ])
   @@ fun (daemon, _tcpv4, udpv4) () ->
-  let _ = Tscclock.init () in
+  let _ = Chaos.Clock.init ~now:Miou_solo5.clock_wall in
   let rng =
     Mirage_crypto_rng_miou_solo5.initialize (module Mirage_crypto_rng.Fortuna)
   in
@@ -195,9 +195,7 @@ let run _ cidr gateway servers =
     Mirage_crypto_rng_miou_solo5.kill rng;
     Miou_solo5_net.kill daemon
   in
-  Fun.protect ~finally @@ fun () ->
-  Logs.debug (fun m -> m "tscclock_freq: %fGHz" (Tscclock.get_freq ()));
-  run udpv4 servers
+  Fun.protect ~finally @@ fun () -> run udpv4 servers
 
 open Cmdliner
 

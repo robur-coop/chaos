@@ -8,7 +8,7 @@
 
 struct base {
   uint64_t tsc; // base
-  uint64_t ns; // base
+  uint64_t ns;  // base
   double ns_per_tsc;
 };
 
