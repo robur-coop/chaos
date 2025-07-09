@@ -126,7 +126,7 @@ let rec step udpv4 wk sleepers rxs server =
         Logs.debug (fun m -> m "%a:%d unreachable" Ipaddr.V4.pp dst port);
         Chaos.Source.dst_unreachable tx
       in
-      let now () = Chaos.Clock.read_raw_time () in
+      let now () = Chaos.Clock.read_cooked_time () in
       (* NOTE(dinosaure): [fn] is executed **after** the discovery
          of routes. When the new NTPv4 packet is sent, we have the most accurate
          time of transmission from the perspective of the unikernel. *)
@@ -147,6 +147,7 @@ let rec step udpv4 wk sleepers rxs server =
       step udpv4 wk sleepers rxs server
 
 let run udpv4 servers =
+  let _ = Chaos.Clock.init Tscclock.now in
   let wk = Wk.create () in
   let actives = Hashtbl.create 0x10 in
   let reference = Chaos.Reference.make () in
@@ -172,7 +173,7 @@ let run udpv4 servers =
           Seq.iter Miou.cancel prms; terminate sleepers
       | servers ->
           Logs.debug (fun m -> m "select source");
-          let now = Chaos.Clock.read_raw_time () in
+          let now = Chaos.Clock.read_cooked_time () in
           (* TODO(dinosaure): for [now], get monotonic last event time *)
           let data = Chaos.Select.select now servers in
           let stratum (* TODO *) = 3 in
@@ -184,18 +185,20 @@ let run udpv4 servers =
   in
   Miou.await_exn prm
 
+module RNG = Mirage_crypto_rng.Fortuna
+
 let run _ cidr gateway servers =
   Miou_solo5.(run [ Miou_solo5_net.stackv4 ~name:"service" ?gateway cidr ])
   @@ fun (daemon, _tcpv4, udpv4) () ->
-  let _ = Chaos.Clock.init ~now:Miou_solo5.clock_wall in
-  let rng =
-    Mirage_crypto_rng_miou_solo5.initialize (module Mirage_crypto_rng.Fortuna)
-  in
+  let rng = Mirage_crypto_rng_miou_solo5.initialize (module RNG) in
   let finally () =
     Mirage_crypto_rng_miou_solo5.kill rng;
     Miou_solo5_net.kill daemon
   in
-  Fun.protect ~finally @@ fun () -> run udpv4 servers
+  Fun.protect ~finally @@ fun () ->
+  let _ = Tscclock.init () in
+  Logs.debug (fun m -> m "Start epoch %d" (Tscclock.now ()));
+  run udpv4 servers
 
 open Cmdliner
 

@@ -468,6 +468,9 @@ let handle t =
       assert (Sched.Trigger.on_signal sleeper t () new_round_trip);
       `Sleep (sleeper, nsec)
 
+let on_slew t ~raw:_ ~cooked ~dfreq ~doffset =
+  Stats.slew_samples t.stats cooked dfreq doffset
+
 let make ?(port = 123) dst =
   let pkt =
     {
@@ -512,6 +515,7 @@ let make ?(port = 123) dst =
   assert (Sched.Trigger.on_signal trx t (comp, send) record_t4);
   assert (Sched.Computation.attach send ttx);
   assert (Sched.Computation.attach comp trx);
+  Clock.register_on_slew (on_slew t);
   t
 
 let wake_up sleeper = Sched.Trigger.signal sleeper

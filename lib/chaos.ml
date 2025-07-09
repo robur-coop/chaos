@@ -1,4 +1,3 @@
-module Local = Local
 module Stats = Stats
 module Clock = Clock
 module Source = Source

@@ -259,6 +259,8 @@ let correct_asymmetry t times_back offsets =
   end
 
 let find_best_sample_index t ~off times_back =
+  (* With the value of skew that has been computed, see which of the samples
+     offers the tightest bound on root distance. *)
   if t.n_samples > 0 then begin
     let best_root_distance = ref 0. and best_index = ref 0 in
     for i = 0 to t.n_samples - 1 do
@@ -576,7 +578,7 @@ let adjust old now dfreq doffset =
 
 let slew_samples t now dfreq doffset =
   if t.n_samples > 0 then begin
-    for m = -t.runs_samples to t.n_samples do
+    for m = -t.runs_samples to t.n_samples - 1 do
       let i = get_runsbuf_index t m in
       let sample = t.sample_times.(i) in
       let new_sample, delta = adjust sample now dfreq doffset in

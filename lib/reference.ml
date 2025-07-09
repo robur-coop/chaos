@@ -24,7 +24,8 @@ let make () =
     are_we_synchronised= false
   ; our_root_dispersion= 1.0
   ; our_root_delay= 1.0
-  ; our_skew= 1.0
+  ; our_skew=
+      1.0 (* NOTE(dinosaure): really bad skew, we should be less than 1e-3. *)
   ; our_frequency_sd= 0.0
   ; our_residual_freq= 0.0
   ; our_offset_sd= 0.0
@@ -42,6 +43,9 @@ let clock_estimates t data =
   let measured_skew = data.skew in
   if Float.abs measured_skew > 1e-3 then
     Log.warn (fun m -> m "skew %f too large to track" measured_skew);
+  (* Set new frequency based on weigthed average of the expected and measured
+     skew. Disable updates that are based on totally unreliable frequency
+     information. *)
   let gain =
     if Float.abs measured_skew > 1e-3 then 0.0
     else
@@ -71,25 +75,31 @@ let get_root_dispersion t now =
          *. (t.our_skew +. Float.abs t.our_residual_freq +. 1e-6)
   | None -> 1.0
 
+(* TODO(dinosaure): verify our offset. *)
+let is_offset_ok _offset = true
+
 let update t ~stratum data =
   let open Stats in
-  let now0 = Clock.read_raw_time () in
-  let uncorr_off = Clock.adjust now0 in
+  let raw = Clock.read_raw_time () in
+  let uncorr_off = Clock.adjust raw in
   let uncorr_off = Ptime.Span.of_float_s uncorr_off in
   let uncorr_off = Option.get uncorr_off in
-  let now1 = Ptime.add_span now0 uncorr_off in
-  let now1 = Option.get now1 in
-  let elapsed = Ptime.(Span.to_float_s (diff now1 data.ref_time)) in
+  let cooked = Ptime.add_span raw uncorr_off in
+  let cooked = Option.get cooked in
+  let elapsed = Ptime.(Span.to_float_s (diff cooked data.ref_time)) in
   let offset = data.offset +. (elapsed *. data.frequency) in
+  (* Get new estimates of the frequency and skew including the new data *)
   let freq, residual_freq, skew = clock_estimates t data in
-  t.our_stratum <- Int.min 16 (succ stratum);
-  t.our_ref_time <- Some data.ref_time;
-  t.our_skew <- skew;
-  t.our_residual_freq <- residual_freq;
-  t.our_root_delay <- data.root_delay;
-  t.our_root_dispersion <- data.root_dispersion;
-  t.our_frequency_sd <- data.frequency_sd;
-  t.our_offset_sd <- data.offset_sd;
-  let corr_rate = 0.0 in
-  (* TODO(dinosaure): [corr_rate] is useless for [Clock] but it can be interesting to calculate it. *)
-  Clock.accumulate_freq_and_offset ~dfreq:freq ~doffset:offset corr_rate
+  if is_offset_ok offset then begin
+    t.our_stratum <- Int.min 16 (succ stratum);
+    t.our_ref_time <- Some data.ref_time;
+    t.our_skew <- skew;
+    t.our_residual_freq <- residual_freq;
+    t.our_root_delay <- data.root_delay;
+    t.our_root_dispersion <- data.root_dispersion;
+    t.our_frequency_sd <- data.frequency_sd;
+    t.our_offset_sd <- data.offset_sd;
+    let corr_rate = 0.0 in
+    (* TODO(dinosaure): [corr_rate] is useless for [Clock] but it can be interesting to calculate it. *)
+    Clock.accumulate_freq_and_offset ~dfreq:freq ~doffset:offset corr_rate
+  end

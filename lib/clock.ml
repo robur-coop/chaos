@@ -4,11 +4,16 @@ let src = Logs.Src.create "chaos.clock"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
+type on_slew =
+  raw:Ptime.t -> cooked:Ptime.t -> dfreq:float -> doffset:float -> unit
+
+let now = ref (Fun.const 0)
 let freq = ref 0.0
 let offset = ref 0.0
 let last = ref Ptime.min
-let now = ref (Fun.const 0)
 let precision_quantum = ref 0.0
+let on_slew = Sequence.create ()
+let register_on_slew fn = Sequence.(add Left) on_slew fn
 
 let _MIN_UPDATE_INTERVAL =
   1000. (* Minimum interval between updates when frequency is constant. *)
@@ -33,37 +38,38 @@ let measure_clock_precision () =
   done;
   1e-9 *. Float.of_int !best
 
-let read_raw_time () =
-  Log.debug (fun m -> m "read system clock");
-  of_int_ns (!now ())
-
+let read_raw_time () = of_int_ns (!now ())
 let pp = Ptime.pp_human ~frac_s:9 ()
 
-let rec adjust raw =
+let read_raw_time () =
+  let raw = read_raw_time () in
+  Log.debug (fun m -> m "system-clock: %a" pp raw);
+  raw
+
+let update_offset () =
+  let now = read_raw_time () in
+  let duration = Ptime.(Span.to_float_s (diff now !last)) in
+  offset := !offset +. (1e-6 *. !freq *. duration);
+  last := now;
+  Log.debug (fun m -> m "system-clock offset=%e freq=%f" !offset !freq)
+
+let adjust raw =
   let duration = Ptime.(Span.to_float_s (diff raw !last)) in
   if duration > _MIN_UPDATE_INTERVAL then
     let () = update_offset () in
     Float.neg !offset
   else (-1e-6 *. !freq *. duration) -. !offset
 
-and cook_time raw =
+let cook_time raw =
   let corr = adjust raw in
   let corr = Ptime.Span.of_float_s corr in
   let corr = Option.get corr in
   let cooked = Ptime.add_span raw corr in
-  Option.get cooked
+  let cooked = Option.get cooked in
+  Log.debug (fun m -> m "cooked-clock: %a" pp cooked);
+  cooked
 
-and read_cooked_time () = (Fun.compose cook_time read_raw_time) ()
-
-and update_offset () =
-  let now = read_raw_time () in
-  let duration = Ptime.(Span.to_float_s (diff now !last)) in
-  offset := !offset +. (1e-6 *. !freq *. duration);
-  last := now;
-  Log.debug (fun m -> m "system-clock %a" pp (read_raw_time ()));
-  Log.debug (fun m -> m "cooked-clock %a" pp (read_cooked_time ()));
-  Log.debug (fun m -> m "system-clock offset=%e freq=%f" !offset !freq)
-
+let read_cooked_time = Fun.compose cook_time read_raw_time
 let frequency () = !freq
 let precision_as_quantum () = !precision_quantum
 
@@ -74,16 +80,27 @@ let set_frequency freq' =
 let accrue_offset offset' _corr_rate = offset := !offset +. offset'
 let clamp ~min:mi ~max:ma value = Float.max (Float.min value ma) mi
 
-let init ~now:fn =
+let init fn =
   now := fn;
   last := read_raw_time ();
   precision_quantum := clamp ~min:1e-9 ~max:1. (measure_clock_precision ())
 
 let accumulate_freq_and_offset ~dfreq ~doffset corr_rate =
   let raw = read_raw_time () in
-  let _cooked = cook_time raw in
+  (* Due to modifying the offset, this has to be the cooked time prior
+     to the change we are about to make. *)
+  let cooked = cook_time raw in
   let old_freq = !freq in
+  (* TODO(dinosaure): check offset. *)
   update_offset ();
+  (* Work out new absolute frequency. Note that absolute frequencies are handled
+     in units of ppm, whereas the [dfreq] argument is in terms of the gradient of
+     the (offset) v (local time) function. *)
   freq := !freq +. (dfreq *. (1e6 -. old_freq));
   freq := clamp ~min:(-5e5) ~max:5e5 !freq;
-  accrue_offset doffset corr_rate
+  Log.debug (fun m ->
+      m "old_freq=%.3fppm new_freq=%.3fppm offset=%.6fsec" old_freq !freq
+        doffset);
+  accrue_offset doffset corr_rate;
+  let fn on_slew = on_slew ~raw ~cooked ~dfreq ~doffset in
+  Sequence.iter ~f:fn on_slew
