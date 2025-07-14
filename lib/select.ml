@@ -74,8 +74,8 @@ let search_interval sources =
   (* We should have an agreement between sources. *)
   Log.debug (fun m ->
       m "best-depth=%d selected-sources=%d" !best_depth
-        (List.length endpoints / 4));
-  if !best_depth <= List.length endpoints / 4 then None
+        (List.length endpoints / 2));
+  if endpoints = [] || !best_depth <= List.length endpoints / 4 then None
   else Some (!best_lo, !best_hi)
 
 let score ~min_stratum sources =
@@ -184,18 +184,20 @@ let find_minimum_stratum = function
 
 let square x = x *. x
 
-let combine (sel_idx, _sel_source, _sel_info, sel_data) sources =
+let combine (sel_idx, sel_source, _sel_info, sel_data) sources =
   let sum_offset_weight = ref 0.
   and sum_offset = ref 0.
   and sum2_offset_sd = ref 0.
   and sum_frequency_weight = ref 0.
   and sum_frequency = ref 0.
   and inv_sum2_frequency_sd = ref 0.
-  and inv_sum2_skew = ref 0. in
+  and inv_sum2_skew = ref 0.
+  and combined_sources = ref 0 in
   let fn idx (_score, elt) =
     if idx != sel_idx then
       match elt with
       | `Ok (source, info) ->
+          incr combined_sources;
           let open Stats in
           let data = Stats.get_tracking_data (Source.stats source) in
           let elapsed =
@@ -237,22 +239,25 @@ let combine (sel_idx, _sel_source, _sel_info, sel_data) sources =
   Log.debug (fun m ->
       m "combined result offset=%e osd=%e freq=%e fsd=%e skew=%e" offset
         offset_sd frequency frequency_sd skew);
-  {
-    Stats.ref_time
-  ; offset
-  ; offset_sd
-  ; frequency
-  ; frequency_sd
-  ; skew
-  ; root_delay
-  ; root_dispersion
-  }
+  let data =
+    {
+      Stats.ref_time
+    ; offset
+    ; offset_sd
+    ; frequency
+    ; frequency_sd
+    ; skew
+    ; root_delay
+    ; root_dispersion
+    }
+  in
+  (sel_source, data, !combined_sources)
 
 let select now sources =
   let ( let* ) = Option.bind in
   let sources = qualify ~now sources in
   let* lo, hi = search_interval sources in
-  Logs.debug (fun m -> m "interval lo:%f hi:%f" lo hi);
+  Logs.debug (fun m -> m "interval lo=%f hi=%f" lo hi);
   (* TODO(dinosaure): filter sources against orphan stratum *)
   let sources = in_interval ~lo ~hi sources in
   let* min_stratum = find_minimum_stratum sources in
@@ -275,4 +280,4 @@ let select now sources =
   let best_src_data = Stats.get_tracking_data (Source.stats best_src) in
   let best = (best_idx_src, best_src, best_src_info, best_src_data) in
   if !selected_sources > 1 then Option.some (combine best sources)
-  else Some best_src_data
+  else Some (best_src, best_src_data, 0)

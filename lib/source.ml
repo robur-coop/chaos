@@ -20,19 +20,15 @@ module Reachability = struct
   let make () = { reachability= 0; size= 0 }
   let int_size = Sys.word_size - 1
 
-  let int2bin =
-    let buf = Bytes.create int_size in
-    fun n ->
-      for i = 0 to int_size - 1 do
-        let pos = int_size - 1 - i in
-        Bytes.set buf pos (if n land (1 lsl i) != 0 then '1' else '0')
-      done;
-      (* skip leading zeros *)
-      match Bytes.index_opt buf '1' with
-      | None -> "0b0"
-      | Some i -> "0b" ^ Bytes.sub_string buf i (int_size - i)
+  let int2bin ~len v =
+    let buf = Bytes.create len in
+    for i = len - 1 downto 0 do
+      let chr = if v land (1 lsl i) != 0 then '1' else '0' in
+      Bytes.set buf i chr
+    done;
+    Bytes.unsafe_to_string buf
 
-  let pp ppf t = Fmt.pf ppf "%s/%d" (int2bin t.reachability) t.size
+  let pp ppf t = Fmt.pf ppf "%s/%d" (int2bin ~len:t.size t.reachability) t.size
 
   let update t reachable =
     t.reachability <- t.reachability lsl 1;
@@ -353,6 +349,7 @@ let record_t1 _trigger t (tx, rx) =
       t.state <- End_of_round_trip
   | _, Error Route_unreachable ->
       Logs.warn ~src:t.src (fun m -> m "Server unreachable");
+      Reachability.update t.reachability false;
       t.state <- Invalid Server_unreachable;
       (* NOTE(dinosaure): here, [Computation.cancel] will execute [record_t4]
          iff was not signaled by the user. By this way, we clean-up everything.
@@ -378,6 +375,7 @@ let record_t4 _trigger t (rx, tx) =
       invalid_transition ~state:"record_t4" t
   | _, Error Timeout ->
       t.state <- End_of_round_trip;
+      Reachability.update t.reachability false;
       Logs.warn ~src:t.src (fun m ->
           m "Server timeout (after %d roundtrip(s))" t.number_of_roundtrips);
       (* NOTE(dinosaure): here, [Sched.Computation.cancel] will execute
@@ -440,9 +438,7 @@ let float_sec_to_nsec v =
 let handle t =
   match t.state with
   | Invalid err -> `Error err
-  | New_round_trip { port; pkt; send; recv } ->
-      Reachability.update t.reachability false;
-      `Send (port, pkt, send, recv)
+  | New_round_trip { port; pkt; send; recv } -> `Send (port, pkt, send, recv)
   | Sleep _ | Tx_sent _ | Rx_received _ -> `Await
   | End_of_round_trip when Stats.samples t.stats < 6 ->
       (* NOTE(dinosaure): we would like to speed up the initial synchronisation.

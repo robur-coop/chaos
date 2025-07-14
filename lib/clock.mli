@@ -3,6 +3,7 @@ type on_slew =
 
 val init : (unit -> int) -> unit
 val register_on_slew : on_slew -> unit
+val frequency : unit -> float
 
 val read_raw_time : unit -> Ptime.t
 (** Read the {b system} clock (without correction). *)

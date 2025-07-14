@@ -15,11 +15,23 @@ type t = {
   ; mutable our_root_dispersion: float
   ; mutable our_offset_sd: float
   ; mutable our_frequency_sd: float
+  ; logs: Format.formatter option
 }
 
-let make () =
+[@@@ocamlformat "disable"]
+let __line0 = "=========================================================================================================================================="
+let __line1 = "   Date (UTC) Time            IP Address   St   Freq ppm   Skew ppm     Offset L Co  Offset sd Rem. corr. Root delay Root disp. Max. error"
+[@@@ocamlformat "enable"]
+
+let make ?logs () =
   let our_ref_id = Mirage_crypto_rng.generate 2 in
   let our_ref_id = String.get_int16_be our_ref_id 0 in
+  let header ppf =
+    Format.fprintf ppf "%s\n%!" __line0;
+    Format.fprintf ppf "%s\n%!" __line1;
+    Format.fprintf ppf "%s\n%!" __line0
+  in
+  Option.iter header logs;
   {
     are_we_synchronised= false
   ; our_root_dispersion= 1.0
@@ -32,6 +44,7 @@ let make () =
   ; our_stratum= 0
   ; our_ref_id
   ; our_ref_time= None
+  ; logs
   }
 
 let square x = x *. x
@@ -78,18 +91,42 @@ let get_root_dispersion t now =
 (* TODO(dinosaure): verify our offset. *)
 let is_offset_ok _offset = true
 
-let update t ~stratum data =
+let write_log =
+  let last_sys_offset = ref 0.0 in
+  fun t (server : Ipaddr.V4.t * int) stratum now combined_sources freq offset
+      offset_sd uncorrected_offset orig_root_distance ->
+    match t.logs with
+    | None -> ()
+    | Some ppf ->
+        let max_error = orig_root_distance +. Float.abs !last_sys_offset in
+        let root_dispersion = get_root_dispersion t now in
+        last_sys_offset := offset -. uncorrected_offset;
+        let addr = Ipaddr.V4.to_string (fst server) in
+        let now = Fmt.str "%a" (Ptime.pp_human ()) now in
+        Format.fprintf ppf
+          "%s %-15s %2d %10.3f %10.3f %10.3e N %2d %10.3e %10.3e %10.3e %10.3e \
+           %10.3e\n"
+          now addr stratum freq (1e6 *. t.our_skew) offset combined_sources
+          offset_sd uncorrected_offset t.our_root_delay root_dispersion
+          max_error
+
+let update t server ~stratum ?(combined_sources = 0) data =
   let open Stats in
   let raw = Clock.read_raw_time () in
   let uncorr_off = Clock.adjust raw in
   let uncorr_off = Ptime.Span.of_float_s uncorr_off in
   let uncorr_off = Option.get uncorr_off in
-  let cooked = Ptime.add_span raw uncorr_off in
-  let cooked = Option.get cooked in
-  let elapsed = Ptime.(Span.to_float_s (diff cooked data.ref_time)) in
+  let now = Ptime.add_span raw uncorr_off in
+  let now = Option.get now in
+  let elapsed = Ptime.(Span.to_float_s (diff now data.ref_time)) in
   let offset = data.offset +. (elapsed *. data.frequency) in
   (* Get new estimates of the frequency and skew including the new data *)
   let freq, residual_freq, skew = clock_estimates t data in
+  Log.debug (fun m ->
+      m "freq=%e residual-freq=%e skew=%e" freq residual_freq skew);
+  let orig_root_distance =
+    (t.our_root_delay /. 2.0) +. get_root_dispersion t now
+  in
   if is_offset_ok offset then begin
     t.our_stratum <- Int.min 16 (succ stratum);
     t.our_ref_time <- Some data.ref_time;
@@ -101,5 +138,9 @@ let update t ~stratum data =
     t.our_offset_sd <- data.offset_sd;
     let corr_rate = 0.0 in
     (* TODO(dinosaure): [corr_rate] is useless for [Clock] but it can be interesting to calculate it. *)
-    Clock.accumulate_freq_and_offset ~dfreq:freq ~doffset:offset corr_rate
+    Clock.accumulate_freq_and_offset ~dfreq:freq ~doffset:offset corr_rate;
+    write_log t server stratum now combined_sources (Clock.frequency ()) offset
+      data.offset_sd
+      (Ptime.Span.to_float_s uncorr_off)
+      orig_root_distance
   end
