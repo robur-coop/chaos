@@ -183,8 +183,11 @@ let find_minimum_stratum = function
       List.fold_left fn None sources
 
 let square x = x *. x
+let _COMBINE_LIMIT = 3.0
+let _RESELECT_DISTANCE = 1e-4
 
-let combine (sel_idx, sel_source, _sel_info, sel_data) sources =
+let combine (sel_idx, sel_source, sel_info, sel_data) sources =
+  let open Stats in
   let sum_offset_weight = ref 0.
   and sum_offset = ref 0.
   and sum2_offset_sd = ref 0.
@@ -193,13 +196,25 @@ let combine (sel_idx, sel_source, _sel_info, sel_data) sources =
   and inv_sum2_frequency_sd = ref 0.
   and inv_sum2_skew = ref 0.
   and combined_sources = ref 0 in
+  (* NOTE(dinosaure): like chrony's [combine_sources], the selected source is
+     part of the weighted average (with [elapsed = 0]). Non-selected sources
+     whose root distance is much larger than the selected one's, or whose
+     estimated frequency is too far, are discarded. We do not (yet) implement
+     the persistent [distant] penalty counter nor the [sel_score] hysteresis. *)
+  let sel_src_distance = sel_info.root_distance +. _RESELECT_DISTANCE in
   let fn idx (_score, elt) =
-    if idx != sel_idx then
-      match elt with
-      | `Ok (source, info) ->
+    match elt with
+    | `Ok (source, info) ->
+        let data = Stats.get_tracking_data (Source.stats source) in
+        let distant =
+          idx != sel_idx
+          && (info.root_distance > _COMBINE_LIMIT *. sel_src_distance
+             || Float.abs (sel_data.frequency -. data.frequency)
+                > _COMBINE_LIMIT
+                  *. (sel_data.skew +. data.skew +. _MAX_CLOCK_ERROR))
+        in
+        if not distant then begin
           incr combined_sources;
-          let open Stats in
-          let data = Stats.get_tracking_data (Source.stats source) in
           let elapsed =
             Ptime.(Span.to_float_s (diff sel_data.ref_time data.ref_time))
           in
@@ -212,7 +227,7 @@ let combine (sel_idx, sel_source, _sel_info, sel_data) sources =
           sum2_offset_sd :=
             !sum2_offset_sd
             +. offset_weight
-               *. (square offset_sd +. square (offset +. sel_data.offset));
+               *. (square offset_sd +. square (offset -. sel_data.offset));
           sum_frequency_weight := !sum_frequency_weight +. frequency_weight;
           sum_frequency := !sum_frequency +. (frequency_weight *. data.frequency);
           inv_sum2_frequency_sd :=
@@ -225,7 +240,8 @@ let combine (sel_idx, sel_source, _sel_info, sel_data) sources =
                  freq=%e fsd=%e skew=%e"
                 Ipaddr.pp addr port offset_weight data.offset data.offset_sd
                 frequency_weight data.frequency data.frequency_sd data.skew)
-      | _ -> ()
+        end
+    | _ -> ()
   in
   List.iteri fn sources;
   let ref_time = sel_data.ref_time in
@@ -280,4 +296,4 @@ let select now sources =
   let best_src_data = Stats.get_tracking_data (Source.stats best_src) in
   let best = (best_idx_src, best_src, best_src_info, best_src_data) in
   if !selected_sources > 1 then Option.some (combine best sources)
-  else Some (best_src, best_src_data, 0)
+  else Some (best_src, best_src_data, 1)
