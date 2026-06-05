@@ -60,6 +60,15 @@ let adjust raw =
     Float.neg !offset
   else (-1e-6 *. !freq *. duration) -. !offset
 
+(* The residual (not-yet-baked) part of the offset correction: the frequency
+   drift accumulated since the last [update_offset]. This is the analogue of
+   chrony's [LCL_GetOffsetCorrection] residual. The [offset] register holds the
+   part already "applied" (cf. a kernel-slewed clock), so [cook_time] uses the
+   sum [offset + pending] while the log reports only this small bounded part. *)
+let pending_correction raw =
+  let duration = Ptime.(Span.to_float_s (diff raw !last)) in
+  -1e-6 *. !freq *. duration
+
 let cook_time raw =
   let corr = adjust raw in
   let corr = Ptime.Span.of_float_s corr in

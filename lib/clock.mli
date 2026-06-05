@@ -30,6 +30,13 @@ val adjust : Ptime.t -> float
 (** [adjust v] is equivalent to the correction (see {!val:read_cooked_time})
     applied to the system time. *)
 
+val pending_correction : Ptime.t -> float
+(** [pending_correction v] is the residual (not-yet-baked) part of the
+    correction returned by {!val:adjust}, i.e. only the frequency drift
+    accumulated since the last update. It is the analogue of chrony's
+    uncorrected offset and is meant for reporting (the "Rem. corr." column),
+    unlike {!val:adjust} which returns the whole cumulative correction. *)
+
 val precision_as_quantum : unit -> float
 (** Routine to read the system precision in terms of the actual time step. *)
 
