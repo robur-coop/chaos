@@ -27,6 +27,24 @@ val is_reachable : t -> bool
 val reachability : t -> Reachability.t
 val stratum : ?default:int -> t -> int
 
+val leap : t -> int
+(** Leap indicator (NTP encoding: 0 normal, 1 insert, 2 delete) from the
+    source's last synced packet. *)
+
+(** {2 Selection state.}
+
+    Persistent per-source state used by {!Select} to implement the reference
+    source selection with hysteresis (cf. chrony's [sel_score]/[updates]). *)
+
+val sel_score : t -> float
+val set_sel_score : t -> float -> unit
+val selected : t -> bool
+val set_selected : t -> bool -> unit
+val updates : t -> int
+val set_updates : t -> int -> unit
+val score_pending : t -> bool
+val set_score_pending : t -> bool -> unit
+
 (*/*)
 
 val wake_up : sleeper -> unit

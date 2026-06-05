@@ -78,34 +78,13 @@ let search_interval sources =
   if endpoints = [] || !best_depth <= List.length endpoints / 4 then None
   else Some (!best_lo, !best_hi)
 
-let score ~min_stratum sources =
-  let fn = function
-    | `Ok (source, info) as elt ->
-        let open Stats in
-        let diff = Source.stratum ~default:min_stratum source - min_stratum in
-        let distance = info.root_distance +. (Float.of_int diff *. 1e-3) in
-        let distance = distance +. 1e-4 in
-        let score = 1.0 /. distance in
-        (score, elt)
-    | (`Jittery _ | `Bad_distance _ | `No_stats _ | `Falseticker _) as elt ->
-        let score = 1.0 in
-        (score, elt)
-  in
-  let sources = List.map fn sources in
-  let fn = function
-    | score, elt ->
-        let ipaddr, port =
-          match elt with
-          | `Ok (source, _)
-          | `Falseticker (source, _)
-          | `Jittery source
-          | `Bad_distance source
-          | `No_stats source ->
-              Source.server source
-        in
-        Log.debug (fun m -> m "%a:%d score=%f" Ipaddr.pp ipaddr port score)
-  in
-  List.iter fn sources; sources
+let source_of = function
+  | `Ok (source, _)
+  | `Falseticker (source, _)
+  | `Jittery source
+  | `Bad_distance source
+  | `No_stats source ->
+      source
 
 let in_interval ~lo ~hi sources =
   let fn = function
@@ -185,6 +164,33 @@ let find_minimum_stratum = function
 let square x = x *. x
 let _COMBINE_LIMIT = 3.0
 let _RESELECT_DISTANCE = 1e-4
+let _SCORE_LIMIT = 10.0
+let _STRATUM_WEIGHT = 1e-3
+
+(* Leap second vote among the selectable sources, like chrony's
+   [get_leap_status]: a leap is accepted only if more than half of the voting
+   sources agree. Returns the NTP leap encoding (0 normal, 1 insert, 2 delete). *)
+let leap_of scored =
+  let votes = ref 0 and ins = ref 0 and del = ref 0 in
+  List.iter
+    (function
+      | _, `Ok (source, _) ->
+          incr votes;
+          (match Source.leap source with
+          | 1 -> incr ins
+          | 2 -> incr del
+          | _ -> ())
+      | _ -> ())
+    scored;
+  if !ins > !votes / 2 then 1 else if !del > !votes / 2 then 2 else 0
+
+(* Selection distance of a source: its root distance penalised by the stratum
+   difference and, for NTP sources, a small reselect distance (cf. chrony). *)
+let distance_of ~min_stratum source info =
+  let diff = Source.stratum ~default:min_stratum source - min_stratum in
+  info.Stats.root_distance
+  +. (Float.of_int diff *. _STRATUM_WEIGHT)
+  +. _RESELECT_DISTANCE
 
 let combine (sel_idx, sel_source, sel_info, sel_data) sources =
   let open Stats in
@@ -269,31 +275,113 @@ let combine (sel_idx, sel_source, sel_info, sel_data) sources =
   in
   (sel_source, data, !combined_sources)
 
-let select now sources =
+let select now sources0 =
   let ( let* ) = Option.bind in
-  let sources = qualify ~now sources in
-  let* lo, hi = search_interval sources in
+  let qualified = qualify ~now sources0 in
+  let* lo, hi = search_interval qualified in
   Logs.debug (fun m -> m "interval lo=%f hi=%f" lo hi);
   (* TODO(dinosaure): filter sources against orphan stratum *)
-  let sources = in_interval ~lo ~hi sources in
-  let* min_stratum = find_minimum_stratum sources in
-  let sources = score ~min_stratum sources in
-  let selected_sources = ref 0 in
-  let best_idx_src, _best_score, best_src =
-    let fn (idx, score', source') = function
-      | score, `Ok (source, info) when score > score' ->
-          incr selected_sources;
-          (succ idx, score, Some (source, info))
-      | _, `Ok _ ->
-          incr selected_sources;
-          (succ idx, score', source')
-      | _ -> (succ idx, score', source')
-    in
-    List.fold_left fn (0, 0.0, None) sources
+  let qualified = in_interval ~lo ~hi qualified in
+  let* min_stratum = find_minimum_stratum qualified in
+  (* The current reference source, if it is still selectable. *)
+  let selected_ok =
+    let fn = function
+      | `Ok (source, info) when Source.selected source -> Some (source, info)
+      | _ -> None in
+    List.find_map fn qualified
   in
-  Log.debug (fun m -> m "%d selected source(s)" !selected_sources);
-  let* best_src, best_src_info = best_src in
-  let best_src_data = Stats.get_tracking_data (Source.stats best_src) in
-  let best = (best_idx_src, best_src, best_src_info, best_src_data) in
-  if !selected_sources > 1 then Option.some (combine best sources)
-  else Some (best_src, best_src_data, 1)
+  let sel_distance =
+    Option.map (fun (s, i) -> distance_of ~min_stratum s i) selected_ok
+  in
+  let sel_pending =
+    Option.map (fun (s, _) -> Source.score_pending s) selected_ok
+    |> Option.value ~default:false
+  in
+  (* Update the persistent scores (the hysteresis). A non-selectable source has
+     its score reset to 1.0. For a selectable source, when a reference already
+     exists we multiply its score by [sel_distance / distance] (clamped to
+     >= 1.0), but only if it or the reference has a fresh sample (so a sample is
+     scored exactly once); otherwise the score is simply the inverse distance. *)
+  let scored =
+    let fn elt = match elt with
+      | `Ok (source, info) ->
+        let distance = distance_of ~min_stratum source info in
+        let score = match sel_distance with
+          | Some sel_distance when Source.score_pending source || sel_pending ->
+            let value = Source.sel_score source *. (sel_distance /. distance) in
+            let value = Float.max 1.0 value in
+            Source.set_sel_score source value;
+            value
+          | Some _ -> Source.sel_score source
+          | None ->
+            let value = 1.0 /. distance in
+            Source.set_sel_score source value;
+            value in
+        (score, elt)
+      | elt ->
+        Source.set_sel_score (source_of elt) 1.0;
+        (1.0, elt) in
+    List.map fn qualified
+  in
+  (* The pending samples have now been accounted for in the scores. *)
+  List.iter (fun s -> Source.set_score_pending s false) sources0;
+  List.iter
+    (fun (score, elt) ->
+      let addr, port = Source.server (source_of elt) in
+      Log.debug (fun m -> m "%a:%d score=%f" Ipaddr.pp addr port score))
+    scored;
+  (* Source with the maximum score amongst the selectable ones. *)
+  let max_src =
+    List.fold_left
+      (fun acc (score, elt) ->
+        match (elt, acc) with
+        | `Ok (source, info), Some (_, _, best) when score > best ->
+            Some (source, info, score)
+        | `Ok (source, info), None -> Some (source, info, score)
+        | _ -> acc)
+      None scored
+  in
+  let* max_source, max_info, max_score = max_src in
+  let has_selected = Option.is_some selected_ok in
+  (* Switch the reference only if there is none yet (or it is no longer
+     selectable), or another source has accumulated a score above the limit. *)
+  let switch =
+    (not has_selected)
+    || ((not (Source.selected max_source)) && max_score > _SCORE_LIMIT)
+  in
+  let chosen =
+    if switch then
+      if Source.updates max_source = 0 then None
+        (* Wait until the new reference can actually update the clock. *)
+      else begin
+        Log.debug (fun m ->
+            let addr, port = Source.server max_source in
+            m "selecting new reference %a:%d (score=%f)" Ipaddr.pp addr port
+              max_score);
+        List.iter
+          (fun s -> Source.set_selected s false; Source.set_sel_score s 1.0)
+          sources0;
+        Source.set_selected max_source true;
+        Some (max_source, max_info)
+      end
+    else selected_ok
+  in
+  let* sel_source, sel_info = chosen in
+  (* Don't update the reference when the selected source has no new sample. *)
+  if Source.updates sel_source = 0 then None
+  else begin
+    List.iter (fun s -> Source.set_updates s 0) sources0;
+    let sel_data = Stats.get_tracking_data (Source.stats sel_source) in
+    let sel_idx =
+      let rec go i = function
+        | [] -> assert false
+        | (_, elt) :: tl ->
+            if source_of elt == sel_source then i else go (succ i) tl
+      in
+      go 0 scored
+    in
+    let source, data, combined_sources =
+      combine (sel_idx, sel_source, sel_info, sel_data) scored
+    in
+    Some (source, data, combined_sources, leap_of scored)
+  end

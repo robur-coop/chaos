@@ -15,8 +15,14 @@ type t = {
   ; mutable our_root_dispersion: float
   ; mutable our_offset_sd: float
   ; mutable our_frequency_sd: float
+  ; mutable our_leap_status: int
+        (* Leap indicator (NTP encoding): 0 normal, 1 insert, 2 delete, 3
+         unsynchronised. *)
   ; logs: Format.formatter option
 }
+
+(* Indexed by the NTP leap indicator, like chrony's [leap_codes]. *)
+let leap_codes = [| 'N'; '+'; '-'; '?' |]
 
 [@@@ocamlformat "disable"]
 let __line0 = "=========================================================================================================================================="
@@ -44,6 +50,7 @@ let make ?logs () =
   ; our_stratum= 0
   ; our_ref_id
   ; our_ref_time= None
+  ; our_leap_status= 3 (* LEAP_Unsynchronised until the first update *)
   ; logs
   }
 
@@ -103,14 +110,15 @@ let write_log =
         last_sys_offset := offset -. uncorrected_offset;
         let addr = Ipaddr.to_string (fst server) in
         let now = Fmt.str "%a" (Ptime.pp_human ()) now in
+        let leap = leap_codes.(t.our_leap_status land 0x3) in
         Format.fprintf ppf
-          "%s %-15s %2d %10.3f %10.3f %10.3e N %2d %10.3e %10.3e %10.3e %10.3e \
+          "%s %-15s %2d %10.3f %10.3f %10.3e %c %2d %10.3e %10.3e %10.3e %10.3e \
            %10.3e\n"
-          now addr stratum freq (1e6 *. t.our_skew) offset combined_sources
+          now addr stratum freq (1e6 *. t.our_skew) offset leap combined_sources
           offset_sd uncorrected_offset t.our_root_delay root_dispersion
           max_error
 
-let update t server ~stratum ?(combined_sources = 0) data =
+let update t server ~stratum ?(combined_sources = 0) ?(leap = 0) data =
   let open Stats in
   let raw = Clock.read_raw_time () in
   (* [pending] is the residual correction reported as "Rem. corr." (like
@@ -132,6 +140,8 @@ let update t server ~stratum ?(combined_sources = 0) data =
     (t.our_root_delay /. 2.0) +. get_root_dispersion t now
   in
   if is_offset_ok offset then begin
+    t.are_we_synchronised <- true;
+    t.our_leap_status <- leap;
     t.our_stratum <- Int.min 16 (succ stratum);
     t.our_ref_time <- Some data.ref_time;
     t.our_skew <- skew;

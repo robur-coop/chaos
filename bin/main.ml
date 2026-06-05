@@ -168,11 +168,11 @@ let run metrics udpv4 servers =
           let now = Chaos.Clock.read_cooked_time () in
           (* TODO(dinosaure): for [now], get monotonic last event time *)
           let res = Chaos.Select.select now servers in
-          let fn (source, data, combined_sources) =
+          let fn (source, data, combined_sources, leap) =
             let server = Chaos.Source.server source in
             let stratum = Chaos.Source.stratum source in
-            Chaos.Reference.update reference ~stratum ~combined_sources server
-              data
+            Chaos.Reference.update reference ~stratum ~combined_sources ~leap
+              server data
           in
           Option.iter fn res;
           Wk.idle wk;

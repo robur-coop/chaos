@@ -71,11 +71,33 @@ and t = {
   ; mutable local_poll: int (* Log2 of polling interval at our end *)
   ; reachability: Reachability.t
   ; mutable stratum: int option
+  ; mutable leap: int
+        (* Leap indicator from the source's last synced packet (NTP encoding). *)
+  ; mutable sel_score: float
+        (* Persistent selection score, used for the hysteresis when choosing the
+         reference source (cf. chrony's [sel_score]). *)
+  ; mutable selected: bool
+        (* Whether this source is the current reference (synchronisation)
+         source. *)
+  ; mutable updates: int
+        (* Number of new samples accumulated since the last reference update. *)
+  ; mutable score_pending: bool
+        (* A new sample arrived whose effect on [sel_score] has not yet been
+         applied by the selection. *)
 }
 
 let stats t = t.stats
 let is_reachable t = Reachability.is_reachable t.reachability
 let reachability t = t.reachability
+let leap t = t.leap
+let sel_score t = t.sel_score
+let set_sel_score t v = t.sel_score <- v
+let selected t = t.selected
+let set_selected t v = t.selected <- v
+let updates t = t.updates
+let set_updates t v = t.updates <- v
+let score_pending t = t.score_pending
+let set_score_pending t v = t.score_pending <- v
 
 let source = Logs.Tag.def ~doc:"NTP source" "ntp.source" @@ fun ppf t ->
   Fmt.pf ppf "%a:%d" Ipaddr.pp t.dst t.port
@@ -327,6 +349,7 @@ let end_of_roundtrip ?(tags= Logs.Tag.empty) t t1 t4 pkt =
       Stats.set_ref_id t.stats ~ref_id:pkt.Packet.ref_id;
       t.remote_poll <- Some pkt.Packet.poll;
       t.stratum <- Some (Int.max pkt.Packet.stratum 0);
+      t.leap <- (pkt.Packet.flags lsr 6) land 0x3;
       t.number_of_roundtrips <- t.number_of_roundtrips + 1;
       Reachability.update t.reachability true;
       let sample = to_sample t (t1, t4) pkt in
@@ -339,7 +362,11 @@ let end_of_roundtrip ?(tags= Logs.Tag.empty) t t1 t4 pkt =
               Ptime.(Span.to_float_s (to_span sample.time))
               (Float.neg sample.offset) sample.root_delay sample.root_dispersion);
         Stats.accumulate t.stats sample;
-        Stats.regression t.stats
+        Stats.regression t.stats;
+        (* A new sample is available: count it for the reference-update gate and
+           flag it so the selection applies it once to [sel_score]. *)
+        t.updates <- t.updates + 1;
+        t.score_pending <- true
       in
       Option.iter fn sample
   | valid, synced ->
@@ -520,6 +547,11 @@ let make ?(port = 123) dst =
     ; local_poll= 6 (* SRC_DEFAULT_MINPOLL = 6 *)
     ; reachability= Reachability.make ()
     ; stratum= None
+    ; leap= 0
+    ; sel_score= 1.0
+    ; selected= false
+    ; updates= 0
+    ; score_pending= false
     }
   in
   assert (Sched.Trigger.on_signal ttx t (send, comp) (record_t1 ?tags:None));
