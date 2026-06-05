@@ -31,7 +31,6 @@ end
 
 type t = {
     mutable ref_id: int
-  ; mutable src: Logs.src
   ; source: Ipaddr.t * int
   ; min_samples: int (* User defined minimum and maximum number of samples *)
   ; max_samples: int
@@ -88,6 +87,11 @@ let _MAX_ASYMMETRY = 0.5
 let _MIN_ASYMMETRY_RUN = 10
 let _MAX_ASYMMETRY_RUN = 1000
 
+let source = Logs.Tag.def ~doc:"NTP source" "ntp.source" @@ fun ppf t ->
+  let ipaddr, port = t.source in
+  let uid = t.ref_id in
+  Fmt.pf ppf "%a:%d:%04x" Ipaddr.pp ipaddr port uid
+
 let make ?(min_samples = 1) ?(max_samples = _MAX_SAMPLES) ?(min_delay = 0.)
     ?(asymmetry = 1.) ?(ref_id = 0) (ipaddr, port) =
   let max_samples = Int.max (Int.min max_samples _MAX_SAMPLES) 1 in
@@ -100,13 +104,9 @@ let make ?(min_samples = 1) ?(max_samples = _MAX_SAMPLES) ?(min_delay = 0.)
   let peer_dispersions = Float.Array.create _MAX_SAMPLES in
   let root_delays = Float.Array.create _MAX_SAMPLES in
   let root_dispersions = Float.Array.create _MAX_SAMPLES in
-  let src =
-    Logs.Src.create (Fmt.str "ntp:%a:%d:%04x" Ipaddr.pp ipaddr port 0)
-  in
   {
     ref_id
   ; source= (ipaddr, port)
-  ; src
   ; min_samples
   ; max_samples
   ; fixed_min_delay= min_delay
@@ -154,11 +154,7 @@ let reset t =
   t.asymmetry <- 0.
 
 let set_ref_id t ~ref_id =
-  t.ref_id <- ref_id;
-  let addr, port = t.source in
-  let txt = Fmt.str "ntp:%a:%d:%04x" Ipaddr.pp addr port ref_id in
-  let src = Logs.Src.create txt in
-  t.src <- src
+  t.ref_id <- ref_id
 
 let get_buf_index t idx =
   (t.last_sample + (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) - t.n_samples + idx + 1)
@@ -304,7 +300,7 @@ let prune t new_oldest =
 (* This function runs the linear regression operation on the data. It finds the
    set of most recent samples that give the tightest confidence interval for the
    frequency, and truncates the register down to that number of samples. *)
-let regression t =
+let regression ?(tags= Logs.Tag.empty) t =
   let times_back = Float.Array.make (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) 0.0 in
   let offsets = Float.Array.make (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) 0.0 in
   let peer_distances = Float.Array.make _MAX_SAMPLES 0.0 in
@@ -369,8 +365,9 @@ let regression t =
       t.std_dev <- Float.max _MIN_STDDEV (sqrt est_var);
       t.nruns <- nruns;
       t.skew <- clamp ~min:_MIN_SKEW ~max:_MAX_SKEW t.skew;
-      Logs.debug ~src:t.src (fun m ->
-          m "off=%e freq=%e skew=%e n=%d bs=%d runs=%d asym=%f arun=%d"
+      Logs.debug (fun m ->
+          let tags = Logs.Tag.add source t tags in
+          m ~tags "off=%e freq=%e skew=%e n=%d bs=%d runs=%d asym=%f arun=%d"
             t.estimated_offset t.estimated_frequency t.skew t.n_samples
             best_start t.nruns t.asymmetry t.asymmetry_run);
       let times_back_start = t.runs_samples + best_start in
@@ -395,7 +392,7 @@ let regression t =
     end
   end
 
-let accumulate t sample =
+let accumulate ?(tags= Logs.Tag.empty) t sample =
   if
     t.n_samples > 0
     && (t.n_samples == _MAX_SAMPLES || t.n_samples == t.max_samples)
@@ -405,7 +402,8 @@ let accumulate t sample =
     && Ptime.compare t.sample_times.(t.last_sample) sample.Sample.time >= 0
   then begin
     Log.warn (fun m ->
-        m "Out of order sample detected, discarding history for %d" t.ref_id);
+        let tags = Logs.Tag.add source t tags in
+        m ~tags "Out of order sample detected, discarding history for %d" t.ref_id);
     reset t
   end;
   let n = (t.last_sample + 1) land 127 in
@@ -480,7 +478,7 @@ type info = {
   ; last_sample_ago: float
 }
 
-let get_selection_data t now =
+let get_selection_data ?(tags= Logs.Tag.empty) t now =
   if t.n_samples <= 0 then None
   else if t.regression_ok then begin
     let i = get_runsbuf_index t t.best_single_sample in
@@ -507,8 +505,9 @@ let get_selection_data t now =
     let last_sample_ago =
       Ptime.(Span.to_float_s (diff now t.sample_times.(i)))
     in
-    Logs.debug ~src:t.src (fun m ->
-        m "n=%d off=%f dist=%f sd=%f first_ago=%f last_ago=%f" t.n_samples
+    Logs.debug (fun m ->
+        let tags = Logs.Tag.add source t tags in
+        m ~tags "n=%d off=%f dist=%f sd=%f first_ago=%f last_ago=%f" t.n_samples
           offset root_distance std_dev first_sample_ago last_sample_ago);
     Some
       {
@@ -533,7 +532,7 @@ type data = {
   ; root_dispersion: float
 }
 
-let get_tracking_data t =
+let get_tracking_data ?(tags= Logs.Tag.empty) t =
   if t.n_samples <= 0 then Fmt.invalid_arg "Stats.get_tracking_data";
   let i = get_runsbuf_index t t.best_single_sample in
   let j = get_buf_index t t.best_single_sample in
@@ -552,8 +551,9 @@ let get_tracking_data t =
     +. (t.skew *. elapsed_sample)
     +. offset_sd
   in
-  Logs.debug ~src:t.src (fun m ->
-      m "n=%d off=%f offsd=%f freq=%e freqsd=%e skew=%e delay=%f disp=%f"
+  Logs.debug (fun m ->
+      let tags = Logs.Tag.add source t tags in
+      m ~tags "n=%d off=%f offsd=%f freq=%e freqsd=%e skew=%e delay=%f disp=%f"
         t.n_samples offset offset_sd frequency frequency_sd skew root_delay
         root_dispersion);
   {

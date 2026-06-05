@@ -21,7 +21,7 @@ end
 
 val make : ?port:int -> Ipaddr.t -> t
 val server : t -> Ipaddr.t * int
-val handle : t -> event
+val handle : ?tags:Logs.Tag.set -> t -> event
 val stats : t -> Stats.t
 val is_reachable : t -> bool
 val reachability : t -> Reachability.t

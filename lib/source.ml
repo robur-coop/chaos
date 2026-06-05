@@ -63,7 +63,6 @@ and t = {
     dst: Ipaddr.t
   ; port: int
   ; mutable state: state
-  ; src: Logs.Src.t
   ; mutable number_of_roundtrips: int
   ; mutable remote_poll: int option
         (* Log2 of server polling interval (recovered from received packets) *)
@@ -77,6 +76,9 @@ and t = {
 let stats t = t.stats
 let is_reachable t = Reachability.is_reachable t.reachability
 let reachability t = t.reachability
+
+let source = Logs.Tag.def ~doc:"NTP source" "ntp.source" @@ fun ppf t ->
+  Fmt.pf ppf "%a:%d" Ipaddr.pp t.dst t.port
 
 let pp_error ppf = function
   | Server_unreachable -> Fmt.string ppf "Server unreachable"
@@ -98,8 +100,10 @@ exception Timeout
 exception Discard
 exception Route_unreachable
 
-let[@inline never] invalid_transition ~state t =
-  Logs.err ~src:t.src (fun m -> m "Invalid transition (%s): %a" state pp t);
+let[@inline never] invalid_transition ?(tags= Logs.Tag.empty) ~state t =
+  Logs.err (fun m ->
+    let tags = Logs.Tag.add source t tags in
+    m ~tags "Invalid transition (%s): %a" state pp t);
   assert false
 
 let log2_to_double l =
@@ -236,9 +240,9 @@ let get_transmit_poll t =
     | None -> t.local_poll
   else t.local_poll
 
-let get_transmit_delay t =
+let get_transmit_delay ?(tags= Logs.Tag.empty) t =
   let poll_to_use = get_transmit_poll t in
-  Logs.debug ~src:t.src (fun m -> m "poll-to-use: %d" poll_to_use);
+  Logs.debug (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "poll-to-use: %d" poll_to_use);
   log2_to_double poll_to_use
 
 let stratum ?(default = 0) t =
@@ -308,11 +312,11 @@ let to_sample t (t1, t4) pkt =
   let testC = check_delay_dev_ratio t m.time m.offset m.peer_delay in
   if testA && testB && testC then Some m else None
 
-let end_of_roundtrip t t1 t4 pkt =
+let end_of_roundtrip ?(tags= Logs.Tag.empty) t t1 t4 pkt =
   match (valid_packet ~t1 pkt, synced_packet pkt) with
   | true, true ->
-      Logs.debug ~src:t.src (fun m -> m "%a" Packet.pp_meta pkt);
-      Logs.debug ~src:t.src (fun m -> m "%a" Packet.pp pkt);
+      Logs.debug (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "%a" Packet.pp_meta pkt);
+      Logs.debug (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "%a" Packet.pp pkt);
       Stats.set_ref_id t.stats ~ref_id:pkt.Packet.ref_id;
       t.remote_poll <- Some pkt.Packet.poll;
       t.stratum <- Some (Int.max pkt.Packet.stratum 0);
@@ -321,8 +325,9 @@ let end_of_roundtrip t t1 t4 pkt =
       let sample = to_sample t (t1, t4) pkt in
       let fn sample =
         let open Sample in
-        Logs.debug ~src:t.src (fun m ->
-            m "src=%a:%d reach=%a ts=%.09f offset=%e delay=%e disp=%e"
+        Logs.debug (fun m ->
+            let tags = Logs.Tag.add source t tags in
+            m ~tags "src=%a:%d reach=%a ts=%.09f offset=%e delay=%e disp=%e"
               Ipaddr.pp t.dst t.port Reachability.pp t.reachability
               Ptime.(Span.to_float_s (to_span sample.time))
               (Float.neg sample.offset) sample.root_delay sample.root_dispersion);
@@ -334,13 +339,13 @@ let end_of_roundtrip t t1 t4 pkt =
       if valid then t.remote_poll <- Some pkt.Packet.poll;
       Reachability.update t.reachability (valid && synced)
 
-let record_t1 _trigger t (tx, rx) =
+let record_t1 _trigger ?(tags= Logs.Tag.empty) t (tx, rx) =
   let result = Sched.Computation.peek tx in
   let result = Option.get result in
   match (t.state, result) with
   | Invalid _, _ -> ()
   | End_of_round_trip, Error Discard ->
-      Logs.debug ~src:t.src (fun m -> m "Roundtrip discarded by the receiver ")
+      Logs.debug (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "Roundtrip discarded by the receiver ")
   | (Sleep _ | Tx_sent _ | End_of_round_trip), _ ->
       invalid_transition ~state:"record_t1" t
   | New_round_trip _, Ok t1 -> t.state <- Tx_sent { t1 }
@@ -348,7 +353,7 @@ let record_t1 _trigger t (tx, rx) =
       end_of_roundtrip t t1 t4 pkt;
       t.state <- End_of_round_trip
   | _, Error Route_unreachable ->
-      Logs.warn ~src:t.src (fun m -> m "Server unreachable");
+      Logs.warn (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "Server unreachable");
       Reachability.update t.reachability false;
       t.state <- Invalid Server_unreachable;
       (* NOTE(dinosaure): here, [Computation.cancel] will execute [record_t4]
@@ -357,10 +362,11 @@ let record_t1 _trigger t (tx, rx) =
       ignore (Sched.Computation.cancel rx Discard)
   | _, Error Discard -> ()
   | _, Error exn ->
-      Logs.err ~src:t.src (fun m ->
-          m "Unexpected exception: %s" (Printexc.to_string exn))
+      Logs.err (fun m ->
+        let tags = Logs.Tag.add source t tags in
+          m ~tags "Unexpected exception: %s" (Printexc.to_string exn))
 
-let record_t4 _trigger t (rx, tx) =
+let record_t4 _trigger ?(tags= Logs.Tag.empty) t (rx, tx) =
   let result = Sched.Computation.peek rx in
   let result = Option.get result in
   match (t.state, result) with
@@ -376,8 +382,9 @@ let record_t4 _trigger t (rx, tx) =
   | _, Error Timeout ->
       t.state <- End_of_round_trip;
       Reachability.update t.reachability false;
-      Logs.warn ~src:t.src (fun m ->
-          m "Server timeout (after %d roundtrip(s))" t.number_of_roundtrips);
+      Logs.warn (fun m ->
+          let tags = Logs.Tag.add source t tags in
+          m ~tags "Server timeout (after %d roundtrip(s))" t.number_of_roundtrips);
       (* NOTE(dinosaure): here, [Sched.Computation.cancel] will execute
          [record_t1] iff was not signaled by the user. By this way, we clean-up
          everything.
@@ -385,10 +392,11 @@ let record_t4 _trigger t (rx, tx) =
       ignore (Sched.Computation.cancel tx Discard)
   | _, Error Discard -> ()
   | _, Error exn ->
-      Logs.err ~src:t.src (fun m ->
-          m "Unexpected exception: %s" (Printexc.to_string exn))
+      Logs.err (fun m ->
+          let tags = Logs.Tag.add source t tags in
+          m ~tags "Unexpected exception: %s" (Printexc.to_string exn))
 
-let new_round_trip trigger t () =
+let new_round_trip ?(tags= Logs.Tag.empty) trigger t () =
   match t.state with
   | Invalid _ -> ()
   | Sleep { sleeper; ns= _ } ->
@@ -417,15 +425,15 @@ let new_round_trip trigger t () =
         let ttx = Sched.Trigger.create () in
         let comp = Sched.Computation.create () in
         let trx = Sched.Trigger.create () in
-        assert (Sched.Trigger.on_signal ttx t (send, comp) record_t1);
-        assert (Sched.Trigger.on_signal trx t (comp, send) record_t4);
+        assert (Sched.Trigger.on_signal ttx t (send, comp) (record_t1 ~tags));
+        assert (Sched.Trigger.on_signal trx t (comp, send) (record_t4 ~tags));
         assert (Sched.Computation.attach send ttx);
         assert (Sched.Computation.attach comp trx);
         let port = String.get_uint16_ne (Mirage_crypto_rng.generate 2) 0 in
         let recv = { src= t.dst; port; comp } in
         t.state <- New_round_trip { port; pkt; send; recv }
       end
-      else Logs.warn ~src:t.src (fun m -> m "Unexpected trigger")
+      else Logs.warn (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "Unexpected trigger")
   | New_round_trip _ | Tx_sent _ | Rx_received _ | End_of_round_trip ->
       invalid_transition ~state:"new_round_trip" t
 
@@ -435,7 +443,7 @@ let float_sec_to_nsec v =
   let ns = sec *. 1e9 in
   Float.to_int (ns +. frac_ns)
 
-let handle t =
+let handle ?(tags= Logs.Tag.empty) t =
   match t.state with
   | Invalid err -> `Error err
   | New_round_trip { port; pkt; send; recv } -> `Send (port, pkt, send, recv)
@@ -449,8 +457,9 @@ let handle t =
          burst mode (known as iburst for chrony). *)
       let sleeper = Sched.Trigger.create () in
       let nsec (* 2sec *) = 2_000_000_000 in
-      Logs.debug ~src:t.src (fun m ->
-          m "Sleep %a" Duration.pp (Int64.of_int nsec));
+      Logs.debug (fun m ->
+          let tags = Logs.Tag.add source t tags in
+          m ~tags "Sleep %a" Duration.pp (Int64.of_int nsec));
       t.state <- Sleep { sleeper; ns= nsec };
       assert (Sched.Trigger.on_signal sleeper t () new_round_trip);
       `Sleep (sleeper, nsec)
@@ -458,8 +467,9 @@ let handle t =
       let sleeper = Sched.Trigger.create () in
       let sec = get_transmit_delay t in
       let nsec = float_sec_to_nsec sec in
-      Logs.debug ~src:t.src (fun m ->
-          m "Sleep %a" Duration.pp (Int64.of_int nsec));
+      Logs.debug (fun m ->
+          let tags = Logs.Tag.add source t tags in
+          m ~tags "Sleep %a" Duration.pp (Int64.of_int nsec));
       t.state <- Sleep { sleeper; ns= nsec };
       assert (Sched.Trigger.on_signal sleeper t () new_round_trip);
       `Sleep (sleeper, nsec)
@@ -490,12 +500,10 @@ let make ?(port = 123) dst =
   let src_port = String.get_uint16_ne (Mirage_crypto_rng.generate 2) 0 in
   let recv = { src= dst; port= src_port; comp } in
   let state = New_round_trip { port= src_port; pkt; send; recv } in
-  let src = Logs.Src.create (Fmt.str "ntp:%a:%d" Ipaddr.pp dst port) in
   let stats = Stats.make (dst, port) in
   let t =
     {
-      src
-    ; dst
+      dst
     ; port
     ; state
     ; remote_poll= None
@@ -507,8 +515,8 @@ let make ?(port = 123) dst =
     ; stratum= None
     }
   in
-  assert (Sched.Trigger.on_signal ttx t (send, comp) record_t1);
-  assert (Sched.Trigger.on_signal trx t (comp, send) record_t4);
+  assert (Sched.Trigger.on_signal ttx t (send, comp) (record_t1 ?tags:None));
+  assert (Sched.Trigger.on_signal trx t (comp, send) (record_t4 ?tags:None));
   assert (Sched.Computation.attach send ttx);
   assert (Sched.Computation.attach comp trx);
   Clock.register_on_slew (on_slew t);

@@ -17,11 +17,11 @@ val reset : t -> unit
 
 val set_ref_id : t -> ref_id:int -> unit
 
-val accumulate : t -> Sample.t -> unit
+val accumulate : ?tags:Logs.Tag.set -> t -> Sample.t -> unit
 (** [accumulate t sample] accumulates a single sample into the statistics
     handler. *)
 
-val regression : t -> unit
+val regression : ?tags:Logs.Tag.set -> t -> unit
 (** [regression t] runs the linear regression operation on the data. It finds
     the set of most recent samples that give the tightest confidence interval
     for the frequency, and truncates the register down to that number of
@@ -54,7 +54,7 @@ type info = {
 }
 (** Structure used to hold info for selecting between sources. *)
 
-val get_selection_data : t -> Ptime.t -> info option
+val get_selection_data : ?tags:Logs.Tag.set -> t -> Ptime.t -> info option
 (** Get data needed for selection *)
 
 type data = {
@@ -68,5 +68,5 @@ type data = {
   ; root_dispersion: float
 }
 
-val get_tracking_data : t -> data
+val get_tracking_data : ?tags:Logs.Tag.set -> t -> data
 val slew_samples : t -> Ptime.t -> float -> float -> unit
