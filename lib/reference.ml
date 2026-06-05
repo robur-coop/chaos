@@ -113,10 +113,14 @@ let write_log =
 let update t server ~stratum ?(combined_sources = 0) data =
   let open Stats in
   let raw = Clock.read_raw_time () in
-  let uncorr_off = Clock.adjust raw in
-  let uncorr_off = Ptime.Span.of_float_s uncorr_off in
-  let uncorr_off = Option.get uncorr_off in
-  let now = Ptime.add_span raw uncorr_off in
+  (* [pending] is the residual correction reported as "Rem. corr." (like
+     chrony's uncorrected offset): only the frequency drift since the last
+     update, not the whole cumulative software correction. [now] still uses the
+     total correction so the cooked time stays exact. *)
+  let pending = Clock.pending_correction raw in
+  let total_corr = Clock.adjust raw in
+  let total_corr = Option.get (Ptime.Span.of_float_s total_corr) in
+  let now = Ptime.add_span raw total_corr in
   let now = Option.get now in
   let elapsed = Ptime.(Span.to_float_s (diff now data.ref_time)) in
   let offset = data.offset +. (elapsed *. data.frequency) in
@@ -140,7 +144,5 @@ let update t server ~stratum ?(combined_sources = 0) data =
     (* TODO(dinosaure): [corr_rate] is useless for [Clock] but it can be interesting to calculate it. *)
     Clock.accumulate_freq_and_offset ~dfreq:freq ~doffset:offset corr_rate;
     write_log t server stratum now combined_sources (Clock.frequency ()) offset
-      data.offset_sd
-      (Ptime.Span.to_float_s uncorr_off)
-      orig_root_distance
+      data.offset_sd pending orig_root_distance
   end
