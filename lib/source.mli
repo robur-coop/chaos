@@ -44,6 +44,9 @@ val updates : t -> int
 val set_updates : t -> int -> unit
 val score_pending : t -> bool
 val set_score_pending : t -> bool -> unit
+val distant : t -> int
+val set_distant : t -> int -> unit
+val reachability_size : t -> int
 
 (*/*)
 

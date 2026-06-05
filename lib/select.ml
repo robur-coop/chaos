@@ -166,6 +166,8 @@ let _COMBINE_LIMIT = 3.0
 let _RESELECT_DISTANCE = 1e-4
 let _SCORE_LIMIT = 10.0
 let _STRATUM_WEIGHT = 1e-3
+let _DISTANT_PENALTY = 32
+let _SOURCE_REACH_BITS = 8
 
 (* Leap second vote among the selectable sources, like chrony's
    [get_leap_status]: a leap is accepted only if more than half of the voting
@@ -203,23 +205,33 @@ let combine (sel_idx, sel_source, sel_info, sel_data) sources =
   and inv_sum2_skew = ref 0.
   and combined_sources = ref 0 in
   (* NOTE(dinosaure): like chrony's [combine_sources], the selected source is
-     part of the weighted average (with [elapsed = 0]). Non-selected sources
+     part of the weighted average (with [elapsed = 0]). A non-selected source
      whose root distance is much larger than the selected one's, or whose
-     estimated frequency is too far, are discarded. We do not (yet) implement
-     the persistent [distant] penalty counter nor the [sel_score] hysteresis. *)
+     estimated frequency is too far, is flagged "distant" and excluded. The
+     [distant] counter gives this decision hysteresis: once a mature source is
+     flagged it is penalised for [_DISTANT_PENALTY] reference updates before it
+     can rejoin the combination (a single update during warm-up). *)
   let sel_src_distance = sel_info.root_distance +. _RESELECT_DISTANCE in
   let fn idx (_score, elt) =
     match elt with
     | `Ok (source, info) ->
         let data = Stats.get_tracking_data (Source.stats source) in
-        let distant =
+        let too_far =
           idx != sel_idx
           && (info.root_distance > _COMBINE_LIMIT *. sel_src_distance
              || Float.abs (sel_data.frequency -. data.frequency)
                 > _COMBINE_LIMIT
                   *. (sel_data.skew +. data.skew +. _MAX_CLOCK_ERROR))
         in
-        if not distant then begin
+        if too_far then
+          Source.set_distant source
+            (if Source.reachability_size source >= _SOURCE_REACH_BITS then
+               _DISTANT_PENALTY
+             else 1)
+        else if Source.distant source > 0 then
+          Source.set_distant source (Source.distant source - 1);
+        if Source.distant source > 0 then ()
+        else begin
           incr combined_sources;
           let elapsed =
             Ptime.(Span.to_float_s (diff sel_data.ref_time data.ref_time))
@@ -319,7 +331,10 @@ let select now sources0 =
             value in
         (score, elt)
       | elt ->
-        Source.set_sel_score (source_of elt) 1.0;
+        let source = source_of elt in
+        Source.set_sel_score source 1.0;
+        (* A non-selectable source starts penalised when it becomes Ok again. *)
+        Source.set_distant source _DISTANT_PENALTY;
         (1.0, elt) in
     List.map fn qualified
   in
@@ -359,7 +374,10 @@ let select now sources0 =
             m "selecting new reference %a:%d (score=%f)" Ipaddr.pp addr port
               max_score);
         List.iter
-          (fun s -> Source.set_selected s false; Source.set_sel_score s 1.0)
+          (fun s ->
+            Source.set_selected s false;
+            Source.set_sel_score s 1.0;
+            Source.set_distant s 0)
           sources0;
         Source.set_selected max_source true;
         Some (max_source, max_info)

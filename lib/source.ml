@@ -37,6 +37,7 @@ module Reachability = struct
     if t.size < 8 then t.size <- t.size + 1
 
   let is_reachable t = t.reachability != 0
+  let size t = t.size
 
   let compare t0 t1 =
     let value = t0.size - t1.size in
@@ -84,6 +85,9 @@ and t = {
   ; mutable score_pending: bool
         (* A new sample arrived whose effect on [sel_score] has not yet been
          applied by the selection. *)
+  ; mutable distant: int
+        (* Penalty counter excluding this source from the combination while
+         positive (cf. chrony's [distant]). *)
 }
 
 let stats t = t.stats
@@ -98,6 +102,9 @@ let updates t = t.updates
 let set_updates t v = t.updates <- v
 let score_pending t = t.score_pending
 let set_score_pending t v = t.score_pending <- v
+let distant t = t.distant
+let set_distant t v = t.distant <- v
+let reachability_size t = Reachability.size t.reachability
 
 let source = Logs.Tag.def ~doc:"NTP source" "ntp.source" @@ fun ppf t ->
   Fmt.pf ppf "%a:%d" Ipaddr.pp t.dst t.port
@@ -552,6 +559,7 @@ let make ?(port = 123) dst =
     ; selected= false
     ; updates= 0
     ; score_pending= false
+    ; distant= 0
     }
   in
   assert (Sched.Trigger.on_signal ttx t (send, comp) (record_t1 ?tags:None));
