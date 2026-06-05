@@ -35,20 +35,36 @@ module Wk : sig
   val idle : t -> unit
   val interrupt : t -> unit
 end = struct
-  type t = Miou.Trigger.t ref
+  (* Level-triggered wake-up: an interruption arriving while no one is idle is
+     latched into [pending] so the next [idle] returns immediately instead of
+     blocking on a signal that already happened (avoids the lost-wakeup race).
 
-  let create () = ref (Miou.Trigger.create ())
+     ---- weird case ----
+     t0 | interrupt => t.pending <- true
+     t1 | idle => non-blocking (considering our Wk.t as already "awake")
 
-  let cancel _trigger comp value =
-    assert (Miou.Computation.try_return comp value)
+     ---- "normal" case ----
+     t0 | idle => await
+     t1 | interrupt => wake-up *)
+  type t = {
+      mutable pending: bool
+    ; mutable waiter: unit Miou.Computation.t option
+  }
 
-  let idle trigger =
-    let waiter = Miou.Computation.create () in
-    trigger := Miou.Trigger.create ();
-    assert (Miou.Trigger.on_signal !trigger waiter () cancel);
-    Miou.Computation.await_exn waiter
+  let create () = { pending= false; waiter= None }
 
-  let interrupt trigger = Miou.Trigger.signal !trigger
+  let interrupt t =
+    match t.waiter with
+    | Some c -> t.waiter <- None; ignore (Miou.Computation.try_return c ())
+    | None -> t.pending <- true
+
+  let idle t =
+    if t.pending then t.pending <- false
+    else begin
+      let c = Miou.Computation.create () in
+      t.waiter <- Some c;
+      Miou.Computation.await_exn c
+    end
 end
 
 let when_ntpv4_is_received _trigger ts wk =
