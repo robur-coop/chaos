@@ -262,8 +262,8 @@ let to_sample t (t1, t4) pkt =
   let local_avg, local_interval =
     average_and_diff ~earlier:local_tx ~later:local_rx
   in
-  let root_delay = pkt.Packet.root_delay in
-  let root_dispersion = pkt.Packet.root_dispersion in
+  let pkt_root_delay = pkt.Packet.root_delay in
+  let pkt_root_dispersion = pkt.Packet.root_dispersion in
   let response_time =
     Float.abs Ptime.(Span.to_float_s (diff remote_tx remote_rx))
   in
@@ -281,6 +281,10 @@ let to_sample t (t1, t4) pkt =
   let peer_dispersion =
     precision +. (skew *. Float.abs (Ptime.Span.to_float_s local_interval))
   in
+  (* NOTE(dinosaure): like chrony (ntp_core.c), the sample's root delay and root
+     dispersion must include the peer delay and peer dispersion respectively. *)
+  let root_delay = pkt_root_delay +. peer_delay in
+  let root_dispersion = pkt_root_dispersion +. peer_dispersion in
   let m =
     {
       Sample.time
