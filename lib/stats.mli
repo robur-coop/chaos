@@ -8,7 +8,7 @@ val make :
   -> ?min_delay:float
   -> ?asymmetry:float
   -> ?ref_id:int
-  -> Ipaddr.V4.t * int
+  -> Ipaddr.t * int
   -> t
 (** [make ref_id] creates a new instance of statistics handler. *)
 

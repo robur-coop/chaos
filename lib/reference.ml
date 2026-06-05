@@ -93,7 +93,7 @@ let is_offset_ok _offset = true
 
 let write_log =
   let last_sys_offset = ref 0.0 in
-  fun t (server : Ipaddr.V4.t * int) stratum now combined_sources freq offset
+  fun t (server : Ipaddr.t * int) stratum now combined_sources freq offset
       offset_sd uncorrected_offset orig_root_distance ->
     match t.logs with
     | None -> ()
@@ -101,7 +101,7 @@ let write_log =
         let max_error = orig_root_distance +. Float.abs !last_sys_offset in
         let root_dispersion = get_root_dispersion t now in
         last_sys_offset := offset -. uncorrected_offset;
-        let addr = Ipaddr.V4.to_string (fst server) in
+        let addr = Ipaddr.to_string (fst server) in
         let now = Fmt.str "%a" (Ptime.pp_human ()) now in
         Format.fprintf ppf
           "%s %-15s %2d %10.3f %10.3f %10.3e N %2d %10.3e %10.3e %10.3e %10.3e \

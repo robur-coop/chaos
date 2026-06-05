@@ -7,7 +7,7 @@ module Log = (val Logs.src_log src : Logs.LOG)
 type tx = Ptime.t Sched.Computation.t
 
 type rx = {
-    src: Ipaddr.V4.t
+    src: Ipaddr.t
   ; port: int
   ; comp: (Ptime.t * Packet.t) Sched.Computation.t
 }
@@ -60,7 +60,7 @@ and state =
 and error = Server_unreachable
 
 and t = {
-    dst: Ipaddr.V4.t
+    dst: Ipaddr.t
   ; port: int
   ; mutable state: state
   ; src: Logs.Src.t
@@ -323,7 +323,7 @@ let end_of_roundtrip t t1 t4 pkt =
         let open Sample in
         Logs.debug ~src:t.src (fun m ->
             m "src=%a:%d reach=%a ts=%.09f offset=%e delay=%e disp=%e"
-              Ipaddr.V4.pp t.dst t.port Reachability.pp t.reachability
+              Ipaddr.pp t.dst t.port Reachability.pp t.reachability
               Ptime.(Span.to_float_s (to_span sample.time))
               (Float.neg sample.offset) sample.root_delay sample.root_dispersion);
         Stats.accumulate t.stats sample;
@@ -490,7 +490,7 @@ let make ?(port = 123) dst =
   let src_port = String.get_uint16_ne (Mirage_crypto_rng.generate 2) 0 in
   let recv = { src= dst; port= src_port; comp } in
   let state = New_round_trip { port= src_port; pkt; send; recv } in
-  let src = Logs.Src.create (Fmt.str "ntp:%a:%d" Ipaddr.V4.pp dst port) in
+  let src = Logs.Src.create (Fmt.str "ntp:%a:%d" Ipaddr.pp dst port) in
   let stats = Stats.make (dst, port) in
   let t =
     {
@@ -518,7 +518,7 @@ let wake_up sleeper = Sched.Trigger.signal sleeper
 let tx_sent tx ts = ignore (Sched.Computation.return tx ts)
 
 let rx_received ~src ~src_port ~ts pkt (rx : rx) =
-  if Ipaddr.V4.compare rx.src src == 0 && src_port == rx.port then
+  if Ipaddr.compare rx.src src == 0 && src_port == rx.port then
     ignore (Sched.Computation.return rx.comp (ts, pkt))
 
 let rx_active rx = Sched.Computation.is_running rx.comp

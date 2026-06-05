@@ -3,7 +3,7 @@
  (modules main)
  (modes native)
  (link_flags :standard -cclib "-z solo5-abi=hvt")
- (libraries re miou-solo5 miou-solo5-net mirage-crypto-rng-miou-solo5 cmdliner chaos chaos.tscclock logs.fmt logs.cli fmt.cli)
+ (libraries re mkernel mnet mnet-cli mirage-crypto-rng-mkernel cmdliner chaos chaos.tscclock logs.fmt logs.cli fmt.cli)
  (foreign_stubs
   (language c)
   (names manifest)))

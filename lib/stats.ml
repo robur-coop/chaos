@@ -32,7 +32,7 @@ end
 type t = {
     mutable ref_id: int
   ; mutable src: Logs.src
-  ; source: Ipaddr.V4.t * int
+  ; source: Ipaddr.t * int
   ; min_samples: int (* User defined minimum and maximum number of samples *)
   ; max_samples: int
   ; fixed_min_delay: float (* User defined minimum delay *)
@@ -101,7 +101,7 @@ let make ?(min_samples = 1) ?(max_samples = _MAX_SAMPLES) ?(min_delay = 0.)
   let root_delays = Float.Array.create _MAX_SAMPLES in
   let root_dispersions = Float.Array.create _MAX_SAMPLES in
   let src =
-    Logs.Src.create (Fmt.str "ntp:%a:%d:%04x" Ipaddr.V4.pp ipaddr port 0)
+    Logs.Src.create (Fmt.str "ntp:%a:%d:%04x" Ipaddr.pp ipaddr port 0)
   in
   {
     ref_id
@@ -156,7 +156,7 @@ let reset t =
 let set_ref_id t ~ref_id =
   t.ref_id <- ref_id;
   let addr, port = t.source in
-  let txt = Fmt.str "ntp:%a:%d:%04x" Ipaddr.V4.pp addr port ref_id in
+  let txt = Fmt.str "ntp:%a:%d:%04x" Ipaddr.pp addr port ref_id in
   let src = Logs.Src.create txt in
   t.src <- src
 

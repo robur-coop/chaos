@@ -55,8 +55,7 @@ let when_ntpv4_is_received _trigger ts wk =
   ts := Chaos.Clock.read_cooked_time ();
   Wk.interrupt wk
 
-let new_listener orphans udpv4 actives wk port =
-  let open Miou_solo5_net in
+let new_listener orphans udp actives wk port =
   match Hashtbl.find_opt actives port with
   | Some _ -> ()
   | None ->
@@ -66,7 +65,7 @@ let new_listener orphans udpv4 actives wk port =
       let prm =
         Miou.async ~orphans @@ fun () ->
         let buf = Bytes.create 0x7ff in
-        let len, (peer, _peer_port) = UDPv4.recvfrom udpv4 ~port ~trigger buf in
+        let len, (peer, _peer_port) = Mnet.UDP.recvfrom udp ~port ~trigger buf in
         let str = Bytes.sub_string buf 0 len in
         match Chaos.Packet.decode str with
         | Ok pkt -> `Packet (!ts, pkt, peer, port)
@@ -104,21 +103,20 @@ let clean_up_listeners udpv4 orphans rxs actives wk =
       in
       rxs
 
-let rec step udpv4 wk sleepers rxs server =
-  let open Miou_solo5_net in
+let rec step udp wk sleepers rxs server =
   match Chaos.Source.handle server with
   | `Send (src_port, pkt, tx, rx) ->
       let dst, port = Chaos.Source.server server in
       let _ =
         Miou.async ~orphans:sleepers @@ fun () ->
-        Miou_solo5.sleep 3_000_000_000;
+        Mkernel.sleep 3_000_000_000;
         Chaos.Source.rx_timeout rx;
         Wk.interrupt wk
       in
       let ts = ref Ptime.min in
       let ok _ = Chaos.Source.tx_sent tx !ts
       and error _ =
-        Logs.warn (fun m -> m "%a:%d unreachable" Ipaddr.V4.pp dst port);
+        Logs.warn (fun m -> m "%a:%d unreachable" Ipaddr.pp dst port);
         Chaos.Source.dst_unreachable tx
       in
       let now () = Chaos.Clock.read_cooked_time () in
@@ -126,20 +124,20 @@ let rec step udpv4 wk sleepers rxs server =
          of routes. When the new NTPv4 packet is sent, we have the most accurate
          time of transmission from the perspective of the unikernel. *)
       let fn bstr = ts := Chaos.Packet.encode_into ~now pkt bstr in
-      UDPv4.sendfn udpv4 ~src_port ~dst ~port ~len:48 fn
+      Mnet.UDP.sendfn udp ~src_port ~dst ~port ~len:48 fn
       |> Result.fold ~ok ~error;
       Wk.interrupt wk;
-      step udpv4 wk sleepers (rx :: rxs) server
+      step udp wk sleepers (rx :: rxs) server
   | `Await -> `Continue (rxs, server)
   | `Error _ -> `Stop rxs
   | `Sleep (sleeper, ns) ->
       let _ =
         Miou.async ~orphans:sleepers @@ fun () ->
-        Miou_solo5.sleep ns;
+        Mkernel.sleep ns;
         Chaos.Source.wake_up sleeper;
         Wk.interrupt wk
       in
-      step udpv4 wk sleepers rxs server
+      step udp wk sleepers rxs server
 
 let run metrics udpv4 servers =
   let _ = Chaos.Clock.init Tscclock.now in
@@ -190,7 +188,7 @@ module Append = struct
   type t = { tmp: Bstr.t; hdr: Bstr.t; mutable abs: int; mutable pos: int }
 
   let make blk =
-    let pagesize = Miou_solo5.Block.pagesize blk in
+    let pagesize = Mkernel.Block.pagesize blk in
     { tmp= Bstr.create pagesize; hdr= Bstr.create pagesize; pos= 8; abs= 0 }
 
   let next t =
@@ -199,9 +197,9 @@ module Append = struct
     t.abs <- t.abs + 1
 
   let set_header t blk real_length =
-    Miou_solo5.Block.atomic_read blk ~src_off:0 ~dst_off:0 t.hdr;
+    Mkernel.Block.atomic_read blk ~src_off:0 ~dst_off:0 t.hdr;
     Bstr.set_int64_be t.hdr 0 (Int64.of_int real_length);
-    Miou_solo5.Block.atomic_write blk ~src_off:0 ~dst_off:0 t.hdr
+    Mkernel.Block.atomic_write blk ~src_off:0 ~dst_off:0 t.hdr
 
   let rec flush blk t = function
     | _, _, 0 -> ()
@@ -211,7 +209,7 @@ module Append = struct
         Bstr.blit_from_string str ~src_off t.tmp ~dst_off ~len:to_write;
         t.pos <- t.pos + to_write;
         let dst_off = t.abs * Bstr.length t.tmp in
-        Miou_solo5.Block.atomic_write blk ~src_off:0 ~dst_off t.tmp;
+        Mkernel.Block.atomic_write blk ~src_off:0 ~dst_off t.tmp;
         let real_length = (t.abs * Bstr.length t.tmp) + t.pos in
         set_header t blk real_length;
         if t.pos = Bstr.length t.tmp then next t;
@@ -223,31 +221,31 @@ module Append = struct
     let t = make blk in
     let out_string = append blk t in
     let out_flush = ignore in
+    let out_width _str ~pos:_ ~len = len in
     let newline = ("\n", 0, 1) in
     let out_newline () = flush blk t newline in
     let out_spaces len = flush blk t (String.make len '\x20', 0, len) in
     let out_indent len = flush blk t (String.make len '\x09', 0, len) in
     Format.formatter_of_out_functions
-      { out_string; out_flush; out_newline; out_spaces; out_indent }
+      { out_string; out_flush; out_newline; out_spaces; out_indent; out_width }
 
   let of_block name =
     let fn blk () = Some (format_of_block_device blk) in
-    Miou_solo5.map fn Miou_solo5.[ block name ]
+    Mkernel.map fn Mkernel.[ block name ]
 end
 
-let run _ cidr gateway metrics servers =
+let run _ (cidr, gateway, ipv6) metrics servers =
   let metrics =
     match metrics with
-    | None -> Miou_solo5.const None
+    | None -> Mkernel.const None
     | Some name -> Append.of_block name
   in
-  Miou_solo5.(
-    run [ Miou_solo5_net.stackv4 ~name:"service" ?gateway cidr; metrics ])
+  Mkernel.(run [ Mnet.stack ~name:"service" ?gateway ~ipv6 cidr; metrics ])
   @@ fun (daemon, _tcpv4, udpv4) metrics () ->
-  let rng = Mirage_crypto_rng_miou_solo5.initialize (module RNG) in
+  let rng = Mirage_crypto_rng_mkernel.initialize (module RNG) in
   let finally () =
-    Mirage_crypto_rng_miou_solo5.kill rng;
-    Miou_solo5_net.kill daemon
+    Mirage_crypto_rng_mkernel.kill rng;
+    Mnet.kill daemon
   in
   Fun.protect ~finally @@ fun () ->
   let _ = Tscclock.init () in
@@ -263,7 +261,7 @@ let utf_8 =
   let doc = "Allow binaries to emit UTF-8 characters." in
   Arg.(value & opt bool true & info [ "with-utf-8" ] ~doc)
 
-let t0 = Miou_solo5.clock_monotonic ()
+let t0 = Mkernel.clock_monotonic ()
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 let neg fn = fun x -> not (fn x)
 
@@ -276,7 +274,7 @@ let reporter sources ppf =
   let report src level ~over k msgf =
     let k _ = over (); k () in
     let pp header _tags k ppf fmt =
-      let t1 = Miou_solo5.clock_monotonic () in
+      let t1 = Mkernel.clock_monotonic () in
       let delta = Float.of_int (t1 - t0) in
       let delta = delta /. 1_000_000_000. in
       Fmt.kpf k ppf
@@ -332,18 +330,6 @@ let setup_logs utf_8 style_renderer sources level =
 let setup_logs =
   Term.(const setup_logs $ utf_8 $ renderer $ setup_sources $ verbosity)
 
-let ipv4 =
-  let doc = "The IP address of the unikernel." in
-  let ipaddr = Arg.conv (Ipaddr.V4.Prefix.of_string, Ipaddr.V4.Prefix.pp) in
-  let open Arg in
-  required & opt (some ipaddr) None & info [ "ipv4" ] ~doc ~docv:"IPv4"
-
-let ipv4_gateway =
-  let doc = "The IP gateway." in
-  let ipaddr = Arg.conv (Ipaddr.V4.of_string, Ipaddr.V4.pp) in
-  let open Arg in
-  value & opt (some ipaddr) None & info [ "ipv4-gateway" ] ~doc ~docv:"IPv4"
-
 let metrics =
   let doc = "Save metrics into the given block device." in
   let open Arg in
@@ -351,13 +337,13 @@ let metrics =
 
 let servers =
   let doc = "IPv4 of NTP servers." in
-  let ipaddr = Arg.conv (Ipaddr.V4.of_string, Ipaddr.V4.pp) in
+  let ipaddr = Arg.conv (Ipaddr.of_string, Ipaddr.pp) in
   let open Arg in
   value & opt_all ipaddr [] & info [ "server" ] ~doc ~docv:"IPv4"
 
 let term =
   let open Term in
-  const run $ setup_logs $ ipv4 $ ipv4_gateway $ metrics $ servers
+  const run $ setup_logs $ Mnet_cli.setup $ metrics $ servers
 
 let cmd =
   let info = Cmd.info "chaos" in

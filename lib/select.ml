@@ -103,7 +103,7 @@ let score ~min_stratum sources =
           | `No_stats source ->
               Source.server source
         in
-        Log.debug (fun m -> m "%a:%d score=%f" Ipaddr.V4.pp ipaddr port score)
+        Log.debug (fun m -> m "%a:%d score=%f" Ipaddr.pp ipaddr port score)
   in
   List.iter fn sources; sources
 
@@ -223,7 +223,7 @@ let combine (sel_idx, sel_source, _sel_info, sel_data) sources =
               m
                 "combining %a:%d oweight=%e offset=%e osd=%e fweight=%e \
                  freq=%e fsd=%e skew=%e"
-                Ipaddr.V4.pp addr port offset_weight data.offset data.offset_sd
+                Ipaddr.pp addr port offset_weight data.offset data.offset_sd
                 frequency_weight data.frequency data.frequency_sd data.skew)
       | _ -> ()
   in

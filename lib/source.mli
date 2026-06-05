@@ -19,8 +19,8 @@ module Reachability : sig
   val pp : t Fmt.t
 end
 
-val make : ?port:int -> Ipaddr.V4.t -> t
-val server : t -> Ipaddr.V4.t * int
+val make : ?port:int -> Ipaddr.t -> t
+val server : t -> Ipaddr.t * int
 val handle : t -> event
 val stats : t -> Stats.t
 val is_reachable : t -> bool
@@ -34,7 +34,7 @@ val tx_sent : tx -> Ptime.t -> unit
 val dst_unreachable : tx -> unit
 
 val rx_received :
-  src:Ipaddr.V4.t -> src_port:int -> ts:Ptime.t -> Packet.t -> rx -> unit
+  src:Ipaddr.t -> src_port:int -> ts:Ptime.t -> Packet.t -> rx -> unit
 
 val rx_timeout : rx -> unit
 val rx_port : rx -> int
