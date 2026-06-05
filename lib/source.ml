@@ -184,7 +184,10 @@ let valid_packet ~t1 pkt =
       && Option.is_some pkt.tx_ts
 
 let synced_packet pkt =
-  (pkt.Packet.flags lsl 6) land 0x3 != 3
+  (* NOTE(dinosaure): the leap indicator is encoded in the 2 most significant
+     bits of [flags] (the NTP lvm byte). chrony's test6 rejects a server whose
+     leap indicator is LEAP_Unsynchronised (3). We must shift right, not left. *)
+  (pkt.Packet.flags lsr 6) land 0x3 != 3
   && pkt.stratum < _MAX_STRATUM
   && pkt.stratum != _INVALID_STRATUM
   && (pkt.Packet.root_delay /. 2.0) +. pkt.Packet.root_dispersion
