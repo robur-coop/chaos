@@ -9,15 +9,22 @@ let frac = (10. ** 12.) /. (2. ** 32.)
 let ptime_of_int64 = function
   | 0L -> None
   | value ->
-      let tv_sec = Int64.(logand (shift_right value 32) mask) in
+      let tv_sec = Int64.(logand (shift_right_logical value 32) mask) in
       let tv_sec = Int64.sub tv_sec 2208988800L in
       (* 1 Jan 1900 to 1 Jan 1970 *)
-      let rem_sec = Int64.rem tv_sec 86400L in
-      let d = Int64.to_int (Int64.div tv_sec 86400L) in
+      (* Floor-divide by the number of seconds in a day so the picoseconds within
+         the day stay non-negative even for times before 1970 (a client may send
+         a randomised transmit timestamp, so [tv_sec] can be negative). Otherwise
+         [Ptime.v] would raise on negative picoseconds and kill the server. *)
+      let q = Int64.div tv_sec 86400L and r = Int64.rem tv_sec 86400L in
+      let d, rem_sec =
+        if Int64.compare r 0L < 0 then (Int64.to_int q - 1, Int64.add r 86400L)
+        else (Int64.to_int q, r)
+      in
       let tv_psec = Int64.mul rem_sec 1_000_000_000_000L in
       let fraction = Int64.logand value mask in
       let fraction_psec = Int64.to_float fraction *. frac in
-      let fraction_psec = Int64.of_float fraction_psec in
+      let fraction_psec = Int64.of_float (Float.round fraction_psec) in
       let tv_psec = Int64.add tv_psec fraction_psec in
       Some (Ptime.v (d, tv_psec))
 
@@ -32,11 +39,15 @@ let[@inline] ptime_to_int64 t =
   let tv_sec = Option.value ~default:0 tv_sec in
   let tv_sec = tv_sec + 2208988800 in
   let _, tv_psec = Ptime.Span.to_d_ps span in
-  let tv_psec = Int64.to_float tv_psec in
-  let frac_s = tv_psec /. 1e12 in
-  let frac_s = Int64.of_float frac_s in
+  (* Sub-second picoseconds -> NTP 32-bit fraction, the exact inverse of the
+     decoding in [ptime_of_int64] (same rounding both ways so a timestamp
+     decoded then re-encoded is bit-identical, which the strict originate-echo
+     check of clients like chronyd requires). *)
+  let sub_psec = Int64.rem tv_psec 1_000_000_000_000L in
+  let fraction = Int64.of_float (Float.round (Int64.to_float sub_psec /. frac)) in
+  let fraction = Int64.min fraction mask in
   let v = Int64.(shift_left (of_int tv_sec) 32) in
-  Int64.(logor v (logand frac_s mask))
+  Int64.(logor v fraction)
 
 type error =
   [ `Invalid_NTP_packet
@@ -164,7 +175,7 @@ let to_string pkt =
   Bytes.set_uint8 buf 0 pkt.flags;
   Bytes.set_uint8 buf 1 pkt.stratum;
   Bytes.set_uint8 buf 2 pkt.poll;
-  Bytes.set_uint8 buf 3 pkt.precision;
+  Bytes.set_int8 buf 3 pkt.precision;
   Bytes.set_int32_be buf 4 (float_to_int32 pkt.root_delay);
   Bytes.set_int32_be buf 8 (float_to_int32 pkt.root_dispersion);
   Bytes.set_int32_be buf 12 (Int32.of_int pkt.ref_id);
@@ -191,7 +202,7 @@ let encode_into ~now pkt bstr =
   SBstr.set_uint8 bstr 0 pkt.flags;
   SBstr.set_uint8 bstr 1 pkt.stratum;
   SBstr.set_uint8 bstr 2 pkt.poll;
-  SBstr.set_uint8 bstr 3 pkt.precision;
+  SBstr.set_int8 bstr 3 pkt.precision;
   SBstr.set_int32_be bstr 4 (float_to_int32 pkt.root_delay);
   SBstr.set_int32_be bstr 8 (float_to_int32 pkt.root_dispersion);
   SBstr.set_int32_be bstr 12 (Int32.of_int pkt.ref_id);

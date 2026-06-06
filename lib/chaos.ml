@@ -5,3 +5,4 @@ module Packet = Packet
 module Sample = Sample
 module Select = Select
 module Reference = Reference
+module Server = Server

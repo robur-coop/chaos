@@ -82,6 +82,11 @@ let read_cooked_time = Fun.compose cook_time read_raw_time
 let frequency () = !freq
 let precision_as_quantum () = !precision_quantum
 
+(* The NTP [precision] byte: log2 of the clock precision (in seconds), as a
+   signed integer (cf. chrony's LCL_GetSysPrecisionAsLog). *)
+let precision_as_log () =
+  Float.to_int (Float.round (Float.log !precision_quantum /. Float.log 2.))
+
 let set_frequency freq' =
   let () = update_offset () in
   freq := freq'

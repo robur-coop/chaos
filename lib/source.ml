@@ -140,13 +140,14 @@ let log2_to_double l =
   if l >= 0 then Float.of_int (1 lsl l) else 1. /. Float.of_int (1 lsl Int.abs l)
 
 let average_and_diff ~earlier ~later =
+  (* Like chrony's [UTI_AverageDiffTimespecs]: [diff] is the FULL interval
+     [later - earlier] and the average is [earlier + diff / 2]. (Returning the
+     halved interval would halve the round-trip [peer_delay] in [to_sample].) *)
   let diff = Ptime.diff later earlier in
-  let diff = Ptime.Span.to_float_s diff in
-  let diff = diff /. 2. in
   (* NOTE(dinosaure): [of_float_s] fails only if we give an NaN value or
       something bigger than ~2'941'758 years... *)
-  let diff = Option.get (Ptime.Span.of_float_s diff) in
-  match Ptime.add_span earlier diff with
+  let half = Option.get (Ptime.Span.of_float_s (Ptime.Span.to_float_s diff /. 2.)) in
+  match Ptime.add_span earlier half with
   | Some avg -> (avg, diff)
   | None ->
       Log.err (fun m ->
@@ -232,13 +233,18 @@ let get_poll_adjusted t error_in_estimate peer_distance =
 
 let adjust_poll t adj =
   t.poll_score <- t.poll_score +. adj;
+  (* chrony truncates toward zero with [(int)] for BOTH [local_poll] and the
+     [poll_score] adjustment; use the same integer for both to keep [poll_score]
+     in [0, 1). *)
   if t.poll_score >= 1.0 then begin
-    t.local_poll <- t.local_poll + Float.to_int t.poll_score;
-    t.poll_score <- t.poll_score -. Float.floor t.poll_score
+    let n = Float.to_int t.poll_score in
+    t.local_poll <- t.local_poll + n;
+    t.poll_score <- t.poll_score -. Float.of_int n
   end;
   if t.poll_score < 0.0 then begin
-    t.local_poll <- t.local_poll + Float.to_int (t.poll_score -. 1.);
-    t.poll_score <- t.poll_score -. Float.floor (t.poll_score -. 1.)
+    let n = Float.to_int (t.poll_score -. 1.) in
+    t.local_poll <- t.local_poll + n;
+    t.poll_score <- t.poll_score -. Float.of_int n
   end;
   (* Clamp polling interval to defined range [MINPOLL:6;MAXPOLL:10]. *)
   if t.local_poll < 6 then begin
@@ -265,12 +271,10 @@ let adjust_poll t adj =
    when we want to initiate a new round trip ([now]). In this case, we need to
    calculate this delay and subtract it from the delay resulting from the poll
    announced by the server. *)
-let get_transmit_poll t =
-  if t.local_poll > Option.value ~default:0 t.remote_poll && is_reachable t then
-    match t.remote_poll with
-    | Some poll -> Int.max poll 6
-    | None -> t.local_poll
-  else t.local_poll
+(* The transmit interval is our adaptive local poll (already clamped to
+   [minpoll, maxpoll] by [adjust_poll]). Like chrony, we use our own poll and do
+   not cap it at the server's announced poll. *)
+let get_transmit_poll t = t.local_poll
 
 let get_transmit_delay ?(tags= Logs.Tag.empty) t =
   let poll_to_use = get_transmit_poll t in
@@ -368,8 +372,22 @@ let end_of_roundtrip ?(tags= Logs.Tag.empty) t t1 t4 pkt =
               Ipaddr.pp t.dst t.port Reachability.pp t.reachability
               Ptime.(Span.to_float_s (to_span sample.time))
               (Float.neg sample.offset) sample.root_delay sample.root_dispersion);
+        (* How far the new sample is from what the prior samples predicted; like
+           chrony, computed BEFORE accumulating the new sample. Offsets are
+           stored negated, so we predict and compare in that convention. *)
+        let estimated_offset = Stats.get_predict_offset t.stats sample.time in
+        let error_in_estimate =
+          Float.abs (Float.neg sample.offset -. estimated_offset)
+        in
         Stats.accumulate t.stats sample;
         Stats.regression t.stats;
+        (* Adapt the polling interval like chrony (ntp_core.c): grow it toward
+           maxpoll when samples are plentiful and predictions are good, back off
+           when the prediction error exceeds the peer distance. *)
+        let peer_distance =
+          sample.peer_dispersion +. (0.5 *. sample.peer_delay)
+        in
+        adjust_poll t (get_poll_adjusted t error_in_estimate peer_distance);
         (* A new sample is available: count it for the reference-update gate and
            flag it so the selection applies it once to [sel_score]. *)
         t.updates <- t.updates + 1;

@@ -7,7 +7,7 @@ module Log = (val Logs.src_log src : Logs.LOG)
 type t = {
     mutable are_we_synchronised: bool
   ; mutable our_stratum: int
-  ; our_ref_id: int
+  ; mutable our_ref_id: int
   ; mutable our_ref_time: Ptime.t option
   ; mutable our_skew: float
   ; mutable our_residual_freq: float
@@ -23,6 +23,16 @@ type t = {
 
 (* Indexed by the NTP leap indicator, like chrony's [leap_codes]. *)
 let leap_codes = [| 'N'; '+'; '-'; '?' |]
+
+(* NTP reference id of the source we synchronise to. For a stratum >= 2 server
+   this is, by convention, the IPv4 address of the reference source. For IPv6 we
+   fall back to the low 32 bits of a hash of the address (our upstreams are IPv4
+   in practice). *)
+let refid_of_ipaddr = function
+  | Ipaddr.V4 v4 -> Int32.to_int (Ipaddr.V4.to_int32 v4) land 0xffffffff
+  | Ipaddr.V6 v6 ->
+      let s = Ipaddr.V6.to_octets v6 in
+      String.get_int32_be s 0 |> Int32.to_int |> ( land ) 0xffffffff
 
 [@@@ocamlformat "disable"]
 let __line0 = "=========================================================================================================================================="
@@ -142,6 +152,7 @@ let update t server ~stratum ?(combined_sources = 0) ?(leap = 0) data =
   if is_offset_ok offset then begin
     t.are_we_synchronised <- true;
     t.our_leap_status <- leap;
+    t.our_ref_id <- refid_of_ipaddr (fst server);
     t.our_stratum <- Int.min 16 (succ stratum);
     t.our_ref_time <- Some data.ref_time;
     t.our_skew <- skew;
@@ -156,3 +167,38 @@ let update t server ~stratum ?(combined_sources = 0) ?(leap = 0) data =
     write_log t server stratum now combined_sources (Clock.frequency ()) offset
       data.offset_sd pending orig_root_distance
   end
+
+(* Reference parameters exposed to the NTP server side, mirroring chrony's
+   [REF_GetReferenceParams] (without the local-stratum fallback). *)
+type params = {
+    synchronised: bool
+  ; leap: int
+  ; stratum: int
+  ; ref_id: int
+  ; ref_time: Ptime.t
+  ; root_delay: float
+  ; root_dispersion: float
+}
+
+let get_params t now =
+  match (t.are_we_synchronised, t.our_ref_time) with
+  | true, Some ref_time ->
+      {
+        synchronised= true
+      ; leap= t.our_leap_status
+      ; stratum= t.our_stratum
+      ; ref_id= t.our_ref_id
+      ; ref_time
+      ; root_delay= t.our_root_delay
+      ; root_dispersion= get_root_dispersion t now
+      }
+  | _ ->
+      {
+        synchronised= false
+      ; leap= 3 (* LEAP_Unsynchronised *)
+      ; stratum= 0
+      ; ref_id= 0
+      ; ref_time= Ptime.epoch
+      ; root_delay= 0.0
+      ; root_dispersion= 0.0
+      }

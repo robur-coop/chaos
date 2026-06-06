@@ -1,6 +1,6 @@
 (library
  (name chaos)
- (modules chaos stats sample source packet sched select clock reference sequence)
+ (modules chaos stats sample source packet sched select clock reference sequence server)
  (public_name chaos)
  (libraries mirage-crypto-rng duration slice.bstr ipaddr fmt ptime logs)
  (foreign_stubs

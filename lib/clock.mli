@@ -40,6 +40,10 @@ val pending_correction : Ptime.t -> float
 val precision_as_quantum : unit -> float
 (** Routine to read the system precision in terms of the actual time step. *)
 
+val precision_as_log : unit -> int
+(** The NTP [precision] byte: [log2] of {!val:precision_as_quantum} rounded to a
+    signed integer. Advertised by the NTP server in its responses. *)
+
 val accumulate_freq_and_offset : dfreq:float -> doffset:float -> float -> unit
 (** Performe the combination of modifying the frequency and applying a slew, in
     one easy step. *)

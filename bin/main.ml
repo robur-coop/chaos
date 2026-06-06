@@ -67,7 +67,7 @@ end = struct
     end
 end
 
-let when_ntpv4_is_received _trigger ts wk =
+let when_ntp_is_received _trigger ts wk =
   ts := Chaos.Clock.read_cooked_time ();
   Wk.interrupt wk
 
@@ -77,7 +77,7 @@ let new_listener orphans udp actives wk port =
   | None ->
       let trigger = Miou.Trigger.create () in
       let ts = ref Ptime.min in
-      assert (Miou.Trigger.on_signal trigger ts wk when_ntpv4_is_received);
+      assert (Miou.Trigger.on_signal trigger ts wk when_ntp_is_received);
       let prm =
         Miou.async ~orphans @@ fun () ->
         let buf = Bytes.create 0x7ff in
@@ -155,19 +155,62 @@ let rec step udp wk sleepers rxs server =
       in
       step udp wk sleepers rxs server
 
-let run metrics udpv4 servers =
+let rec clean_up orphans = match Miou.care orphans with
+  | None | Some None -> ()
+  | Some (Some prm) ->
+    begin match Miou.await prm with
+    | Ok () -> clean_up orphans
+    | Error exn ->
+      Logs.err (fun m -> m "Unexpected exception from a task: %s" (Printexc.to_string exn));
+      clean_up orphans end
+
+let handler ~orphans udp srv reference pkt rx peer peer_port =
+  try
+    let pkt = Chaos.Packet.decode pkt in
+    let fn req = match Chaos.Server.handle srv reference ~rx ~peer req with
+      | Some resp ->
+        let fn () =
+          let now () = Chaos.Clock.read_cooked_time () in
+          let fn bstr = ignore (Chaos.Packet.encode_into ~now resp bstr) in
+          Mnet.UDP.sendfn udp ~src_port:123 ~dst:peer ~port:peer_port ~len:48 fn
+          |> ignore in
+        ignore (Miou.async ~orphans fn)
+      | None -> () in
+    Result.iter fn pkt 
+  with exn ->
+    Logs.warn (fun m -> m "Discarding a request from %a: %s" Ipaddr.pp peer
+      (Printexc.to_string exn))
+
+let run metrics udp servers =
   let _ = Chaos.Clock.init Tscclock.now in
   let wk = Wk.create () in
   let actives = Hashtbl.create 0x10 in
   let reference = Chaos.Reference.make ?logs:metrics () in
-  let prm =
+  let srv = Chaos.Server.make () in
+  (* NTP server: always listening on UDP/123, answering client requests from the
+     reference state maintained by the client loop below. *)
+  let prm0 =
+    Miou.async @@ fun () ->
+    let buf = Bytes.create 0x7ff in
+    let rec serve orphans =
+      clean_up orphans;
+      let trigger = Miou.Trigger.create () in
+      let rx = ref Ptime.min in
+      assert (Miou.Trigger.on_signal trigger rx () @@ fun _trigger rx () -> rx := Chaos.Clock.read_cooked_time ());
+      let len, (peer, peer_port) = Mnet.UDP.recvfrom udp ~trigger ~port:123 buf in
+      let pkt = Bytes.sub_string buf 0 len in
+      handler ~orphans udp srv reference pkt !rx peer peer_port;
+      serve orphans in
+    serve (Miou.orphans ())
+  in
+  let prm1 =
     Miou.async @@ fun () ->
     let sleepers = Miou.orphans () in
     let listeners = Miou.orphans () in
     let rec go rxs servers =
       clean_up_sleepers sleepers;
       let fn (servers, rxs) server =
-        match step udpv4 wk sleepers [] server with
+        match step udp wk sleepers [] server with
         | `Continue ([], server) -> (server :: servers, rxs)
         | `Continue (rxs', server) ->
             (server :: servers, List.rev_append rxs' rxs)
@@ -175,7 +218,7 @@ let run metrics udpv4 servers =
         | `Stop rxs' -> (servers, List.rev_append rxs' rxs)
       in
       let servers, rxs = List.fold_left fn ([], rxs) servers in
-      let rxs = clean_up_listeners udpv4 listeners rxs actives wk in
+      let rxs = clean_up_listeners udp listeners rxs actives wk in
       match servers with
       | [] ->
           let prms = Hashtbl.to_seq_values actives in
@@ -196,7 +239,8 @@ let run metrics udpv4 servers =
     in
     go [] (List.map Chaos.Source.make servers)
   in
-  Miou.await_exn prm
+  let _ = Miou.await_all [ prm0; prm1 ] in
+  ()
 
 module RNG = Mirage_crypto_rng.Fortuna
 
@@ -257,7 +301,7 @@ let run _ (cidr, gateway, ipv6) metrics servers =
     | Some name -> Append.of_block name
   in
   Mkernel.(run [ Mnet.stack ~name:"service" ?gateway ~ipv6 cidr; metrics ])
-  @@ fun (daemon, _tcpv4, udpv4) metrics () ->
+  @@ fun (daemon, _tcpv4, udp) metrics () ->
   let rng = Mirage_crypto_rng_mkernel.initialize (module RNG) in
   let finally () =
     Mirage_crypto_rng_mkernel.kill rng;
@@ -265,7 +309,7 @@ let run _ (cidr, gateway, ipv6) metrics servers =
   in
   Fun.protect ~finally @@ fun () ->
   let _ = Tscclock.init () in
-  run metrics udpv4 servers
+  run metrics udp servers
 
 open Cmdliner
 
