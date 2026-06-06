@@ -9,7 +9,7 @@ type tx = Ptime.t Sched.Computation.t
 type rx = {
     src: Ipaddr.t
   ; port: int
-  ; comp: (Ptime.t * Packet.t) Sched.Computation.t
+  ; comp: (Ptime.t * Packet.t * Auth.check) Sched.Computation.t
 }
 
 type sleeper = Sched.Trigger.t
@@ -54,7 +54,7 @@ and state =
   | Sleep of { sleeper: sleeper; ns: int }
   | New_round_trip of { port: int; pkt: Packet.t; send: tx; recv: rx }
   | Tx_sent of { t1: Ptime.t }
-  | Rx_received of { t4: Ptime.t; pkt: Packet.t }
+  | Rx_received of { t4: Ptime.t; pkt: Packet.t; auth: Auth.check }
   | End_of_round_trip
   | Invalid of error
 
@@ -71,6 +71,9 @@ and t = {
   ; mutable poll_score: float (* Score of current local poll *)
   ; mutable local_poll: int (* Log2 of polling interval at our end *)
   ; reachability: Reachability.t
+  ; key: Auth.key option
+        (* Symmetric key used to authenticate exchanges with this source (the
+         client signs its requests and requires authenticated responses). *)
   ; mutable stratum: int option
   ; mutable leap: int
         (* Leap indicator from the source's last synced packet (NTP encoding). *)
@@ -93,6 +96,7 @@ and t = {
 let stats t = t.stats
 let is_reachable t = Reachability.is_reachable t.reachability
 let reachability t = t.reachability
+let key t = t.key
 let leap t = t.leap
 let sel_score t = t.sel_score
 let set_sel_score t v = t.sel_score <- v
@@ -352,8 +356,22 @@ let to_sample t (t1, t4) pkt =
   let testC = check_delay_dev_ratio t m.time m.offset m.peer_delay in
   if testA && testB && testC then Some m else None
 
-let end_of_roundtrip ?(tags= Logs.Tag.empty) t t1 t4 pkt =
-  match (valid_packet ~t1 pkt, synced_packet pkt) with
+let end_of_roundtrip ?(tags= Logs.Tag.empty) t t1 t4 pkt auth =
+  (* If a key is configured for this source, require the response to carry a
+     valid MAC with that key (chrony's [NAU_CheckResponseAuth]). Without a key,
+     accept regardless of any MAC. *)
+  let authentication =
+    let fn k = match auth with
+      | Auth.Valid kid -> kid = k.Auth.id
+      | _ -> false in
+    Option.map fn t.key |> Option.value ~default:true
+  in
+  if (not authentication) && valid_packet ~t1 pkt then
+    Logs.warn (fun m ->
+        let tags = Logs.Tag.add source t tags in
+        m ~tags "Discarding an unauthenticated response from %a:%d" Ipaddr.pp
+          t.dst t.port);
+  match (valid_packet ~t1 pkt && authentication, synced_packet pkt) with
   | true, true ->
       Logs.debug (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "%a" Packet.pp_meta pkt);
       Logs.debug (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "%a" Packet.pp pkt);
@@ -408,8 +426,8 @@ let record_t1 _trigger ?(tags= Logs.Tag.empty) t (tx, rx) =
   | (Sleep _ | Tx_sent _ | End_of_round_trip), _ ->
       invalid_transition ~state:"record_t1" t
   | New_round_trip _, Ok t1 -> t.state <- Tx_sent { t1 }
-  | Rx_received { t4; pkt }, Ok t1 ->
-      end_of_roundtrip t t1 t4 pkt;
+  | Rx_received { t4; pkt; auth }, Ok t1 ->
+      end_of_roundtrip t t1 t4 pkt auth;
       t.state <- End_of_round_trip
   | _, Error Route_unreachable ->
       Logs.warn (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "Server unreachable");
@@ -430,11 +448,11 @@ let record_t4 _trigger ?(tags= Logs.Tag.empty) t (rx, tx) =
   let result = Option.get result in
   match (t.state, result) with
   | Invalid _, _ -> ()
-  | New_round_trip _, Ok (t4, pkt) ->
+  | New_round_trip _, Ok (t4, pkt, auth) ->
       t.remote_poll <- Some pkt.Packet.poll;
-      t.state <- Rx_received { t4; pkt }
-  | Tx_sent { t1 }, Ok (t4, pkt) ->
-      end_of_roundtrip t t1 t4 pkt;
+      t.state <- Rx_received { t4; pkt; auth }
+  | Tx_sent { t1 }, Ok (t4, pkt, auth) ->
+      end_of_roundtrip t t1 t4 pkt auth;
       t.state <- End_of_round_trip
   | (End_of_round_trip | Sleep _ | Rx_received _), _ ->
       invalid_transition ~state:"record_t4" t
@@ -536,7 +554,7 @@ let handle ?(tags= Logs.Tag.empty) t =
 let on_slew t ~raw:_ ~cooked ~dfreq ~doffset =
   Stats.slew_samples t.stats cooked dfreq doffset
 
-let make ?(port = 123) dst =
+let make ?(port = 123) ?key dst =
   let pkt =
     {
       Packet.flags= 0x23 (* NTPv4, Client mode *)
@@ -571,6 +589,7 @@ let make ?(port = 123) dst =
     ; poll_score= 0.
     ; local_poll= 6 (* SRC_DEFAULT_MINPOLL = 6 *)
     ; reachability= Reachability.make ()
+    ; key
     ; stratum= None
     ; leap= 0
     ; sel_score= 1.0
@@ -590,9 +609,9 @@ let make ?(port = 123) dst =
 let wake_up sleeper = Sched.Trigger.signal sleeper
 let tx_sent tx ts = ignore (Sched.Computation.return tx ts)
 
-let rx_received ~src ~src_port ~ts pkt (rx : rx) =
+let rx_received ~src ~src_port ~ts ~auth pkt (rx : rx) =
   if Ipaddr.compare rx.src src == 0 && src_port == rx.port then
-    ignore (Sched.Computation.return rx.comp (ts, pkt))
+    ignore (Sched.Computation.return rx.comp (ts, pkt, auth))
 
 let rx_active rx = Sched.Computation.is_running rx.comp
 let rx_port ({ port; _ } : rx) = port

@@ -9,18 +9,21 @@ val make : unit -> t
 val handle :
      t
   -> Reference.t
+  -> auth:Auth.check
   -> rx:Ptime.t
   -> peer:Ipaddr.t
   -> Packet.t
-  -> Packet.t option
-(** [handle t reference ~now ~rx ~peer ~request] builds the NTP response to
-    [request] received from [peer] at receive time [rx] ([now] is used to age the
-    root dispersion):
+  -> (Packet.t * int option) option
+(** [handle t reference ~auth ~rx ~peer request] builds the NTP response to
+    [request] received from [peer] at receive time [rx], where [auth] is the
+    verification result of the request's MAC:
 
-    - [None] if [request] is not a client-mode request;
-    - a Kiss-o'-Death "RATE" packet if [peer] exceeds the rate limit;
-    - otherwise a server response filled from [reference] (stratum, leap, ref id,
-      reference/origin/receive timestamps, root delay and dispersion).
+    - [None] if the request is not a client-mode request, or carries a MAC that
+      failed verification ([Auth.Invalid]);
+    - otherwise [Some (packet, sign)] where [packet] is the response (a normal
+      reply, or a Kiss-o'-Death "RATE" packet if the rate limit is exceeded) and
+      [sign] is [Some key_id] when the response must be authenticated with that
+      key (i.e. the request was authenticated), [None] otherwise.
 
     The returned packet has no transmit timestamp: it must be serialised with
     {!val:Packet.encode_into}, which sets it at the actual send time. *)

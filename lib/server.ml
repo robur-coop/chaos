@@ -83,13 +83,18 @@ let reply ~reference ~rx request =
   ; tx_ts= None (* transmit set by [Packet.encode_into] at send time *)
   }
 
-let handle t reference ~rx ~peer request =
-  match Packet.flags_to_mode request.Packet.flags with
-  | `Client ->
+let handle t reference ~auth ~rx ~peer request =
+  match (Packet.flags_to_mode request.Packet.flags, auth) with
+  | _, Auth.Invalid ->
+      Log.debug (fun m ->
+          m "dropping request with bad authentication from %a" Ipaddr.pp peer);
+      None
+  | `Client, _ ->
+      let sign = match auth with Auth.Valid kid -> Some kid | _ -> None in
       let mono = Clock.read_raw_time () in
-      if allow t peer mono then Some (reply ~reference ~rx request)
+      if allow t peer mono then Some (reply ~reference ~rx request, sign)
       else begin
         Log.debug (fun m -> m "rate-limited %a (KoD)" Ipaddr.pp peer);
-        Some (kod_response request)
+        Some (kod_response request, sign)
       end
   | _ -> None
