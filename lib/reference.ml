@@ -18,6 +18,13 @@ type t = {
   ; mutable our_leap_status: int
         (* Leap indicator (NTP encoding): 0 normal, 1 insert, 2 delete, 3
          unsynchronised. *)
+  ; max_offset: float
+        (* chrony's [maxchange]: maximum allowed clock correction. *)
+  ; mutable max_offset_delay: int
+        (* Number of initial updates to accept unconditionally; [< 0] disables
+         the check entirely (chrony default). *)
+  ; mutable max_offset_ignore: int
+        (* Number of remaining over-the-maximum corrections to tolerate. *)
   ; logs: Format.formatter option
 }
 
@@ -39,7 +46,12 @@ let __line0 = "=================================================================
 let __line1 = "   Date (UTC) Time            IP Address   St   Freq ppm   Skew ppm     Offset L Co  Offset sd Rem. corr. Root delay Root disp. Max. error"
 [@@@ocamlformat "enable"]
 
-let make ?logs () =
+(* [max_change] mirrors chrony's [maxchange offset delay ignore] directive:
+   reject (and skip) a clock correction larger than [offset] once the first
+   [delay] updates have passed, tolerating [ignore] further violations. The
+   default [(0., -1, 0)] disables the check, like chrony. *)
+let make ?logs ?(max_change = (0.0, -1, 0)) () =
+  let max_offset, max_offset_delay, max_offset_ignore = max_change in
   let our_ref_id = Mirage_crypto_rng.generate 2 in
   let our_ref_id = String.get_int16_be our_ref_id 0 in
   let header ppf =
@@ -61,6 +73,9 @@ let make ?logs () =
   ; our_ref_id
   ; our_ref_time= None
   ; our_leap_status= 3 (* LEAP_Unsynchronised until the first update *)
+  ; max_offset
+  ; max_offset_delay
+  ; max_offset_ignore
   ; logs
   }
 
@@ -105,8 +120,27 @@ let get_root_dispersion t now =
          *. (t.our_skew +. Float.abs t.our_residual_freq +. 1e-6)
   | None -> 1.0
 
-(* TODO(dinosaure): verify our offset. *)
-let is_offset_ok _offset = true
+(* chrony's [is_offset_ok] (the [maxchange] feature): once the initial [delay]
+   updates have passed, reject a correction larger than [max_offset]. Unlike
+   chrony, which exits the daemon when [max_offset_ignore] reaches zero, we only
+   skip the offending update (returning [false]) so the unikernel keeps running.
+   Disabled by default ([max_offset_delay < 0]). *)
+let is_offset_ok t offset =
+  if t.max_offset_delay < 0 then true
+  else if t.max_offset_delay > 0 then begin
+    t.max_offset_delay <- t.max_offset_delay - 1;
+    true
+  end
+  else if Float.abs offset > t.max_offset then begin
+    Log.warn (fun m ->
+        m "Adjustment of %.3f seconds exceeds the allowed maximum of %.3f \
+           seconds (ignored)"
+          (Float.neg offset) t.max_offset);
+    if t.max_offset_ignore > 0 then
+      t.max_offset_ignore <- t.max_offset_ignore - 1;
+    false
+  end
+  else true
 
 let write_log =
   let last_sys_offset = ref 0.0 in
@@ -149,7 +183,7 @@ let update t server ~stratum ?(combined_sources = 0) ?(leap = 0) data =
   let orig_root_distance =
     (t.our_root_delay /. 2.0) +. get_root_dispersion t now
   in
-  if is_offset_ok offset then begin
+  if is_offset_ok t offset then begin
     t.are_we_synchronised <- true;
     t.our_leap_status <- leap;
     t.our_ref_id <- refid_of_ipaddr (fst server);
