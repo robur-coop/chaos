@@ -90,6 +90,6 @@ let handle t reference ~rx ~peer request =
       if allow t peer mono then Some (reply ~reference ~rx request)
       else begin
         Log.debug (fun m -> m "rate-limited %a (KoD)" Ipaddr.pp peer);
-        Some (kod_response ~request)
+        Some (kod_response request)
       end
   | _ -> None
