@@ -9,19 +9,18 @@ let frac = (10. ** 12.) /. (2. ** 32.)
 let ptime_of_int64 = function
   | 0L -> None
   | value ->
-      let tv_sec = Int64.(logand (shift_right_logical value 32) mask) in
-      let tv_sec = Int64.sub tv_sec 2208988800L in
-      (* 1 Jan 1900 to 1 Jan 1970 *)
-      (* Floor-divide by the number of seconds in a day so the picoseconds within
-         the day stay non-negative even for times before 1970 (a client may send
-         a randomised transmit timestamp, so [tv_sec] can be negative). Otherwise
-         [Ptime.v] would raise on negative picoseconds and kill the server. *)
-      let q = Int64.div tv_sec 86400L and r = Int64.rem tv_sec 86400L in
-      let d, rem_sec =
-        if Int64.compare r 0L < 0 then (Int64.to_int q - 1, Int64.add r 86400L)
-        else (Int64.to_int q, r)
+      (* NTP 32-bit seconds (since 1900) mapped to seconds since 1970 with era
+         wraparound (chrony's [NTP_ERA_SPLIT = 0]): the [land 0xffffffff] makes
+         the subtraction wrap in 32 bits, so the result lands in [1970, 2106) and
+         timestamps past the 2036 NTP rollover decode correctly. As a bonus
+         [tv_sec] is always non-negative, so the day/second split below never
+         produces negative picoseconds (which would make [Ptime.v] raise). *)
+      let ntp_sec =
+        Int64.to_int (Int64.logand (Int64.shift_right_logical value 32) mask)
       in
-      let tv_psec = Int64.mul rem_sec 1_000_000_000_000L in
+      let tv_sec = (ntp_sec - 2208988800) land 0xffffffff in
+      let d = tv_sec / 86400 and rem_sec = tv_sec mod 86400 in
+      let tv_psec = Int64.mul (Int64.of_int rem_sec) 1_000_000_000_000L in
       let fraction = Int64.logand value mask in
       let fraction_psec = Int64.to_float fraction *. frac in
       let fraction_psec = Int64.of_float (Float.round fraction_psec) in

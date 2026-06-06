@@ -202,9 +202,24 @@ let handler ~orphans keys udp srv reference raw rx peer peer_port =
     Logs.warn (fun m -> m "Discarding a request from %a: %s" Ipaddr.pp peer
       (Printexc.to_string exn))
 
+(* How often to compact the heap (and return memory to the host) to keep the
+   footprint bounded over a multi-year uptime. *)
+let _COMPACT_INTERVAL = 3600.0
+
+let[@inline "always"] compact last_compact = function
+  | [] ->
+    let raw = Chaos.Clock.read_raw_time () in
+    if Ptime.(Span.to_float_s (diff raw !last_compact)) > _COMPACT_INTERVAL
+    then begin
+      Gc.compact ();
+      last_compact := Chaos.Clock.read_raw_time ();
+    end
+  | _ -> ()
+
 let run metrics keyspecs ckey udp servers =
   let _ = Chaos.Clock.init Tscclock.now in
   let wk = Wk.create () in
+  let last_compact = ref (Chaos.Clock.read_raw_time ()) in
   let actives = Hashtbl.create 0x10 in
   let reference = Chaos.Reference.make ?logs:metrics () in
   let srv = Chaos.Server.make () in
@@ -258,6 +273,7 @@ let run metrics keyspecs ckey udp servers =
               server data
           in
           Option.iter fn res;
+          compact last_compact rxs;
           Wk.idle wk;
           go rxs (List.rev servers)
     in
@@ -324,8 +340,8 @@ let run _ (cidr, gateway, ipv6) metrics keys ckey servers =
     | None -> Mkernel.const None
     | Some name -> Append.of_block name
   in
-  Mkernel.(run [ Mnet.stack ~name:"service" ?gateway ~ipv6 cidr; metrics ])
-  @@ fun (daemon, _tcpv4, udp) metrics () ->
+  Mkernel.(run [ Mnet.stack ~name:"service" ?gateway ~ipv6 cidr; metrics; Mkernel_memtrace.block "memtrace" ])
+  @@ fun (daemon, _tcpv4, udp) metrics _memtrace () ->
   let rng = Mirage_crypto_rng_mkernel.initialize (module RNG) in
   let finally () =
     Mirage_crypto_rng_mkernel.kill rng;

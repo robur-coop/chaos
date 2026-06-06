@@ -169,9 +169,10 @@ let _MAX_DISPERSION = 16.0
 let is_time_offset_sane ts offset =
   if offset >= Float.neg _MAX_OFFSET && offset < _MAX_OFFSET then begin
     let t = Ptime.to_float_s ts +. offset in
-    t >= 0.0 && t < Float.of_int (0x7fffffff - _MIN_ENDOFTIME_DISTANCE)
-    (* NOTE(dinosaure): we should check larger value like [1 << 32] as the
-        maximum. *)
+    (* Accept any time within the NTP era window [1970, 2106) (cf. chrony's
+       HAVE_LONG_TIME_T branch with NTP_ERA_SPLIT = 0). The old 32-bit-time_t
+       cap near 2037 would have rejected every sample past that date. *)
+    t >= 0.0 && t < _MAX_OFFSET
   end
   else false
 

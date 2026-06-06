@@ -17,9 +17,6 @@ val of_cli : string -> (key, [> `Msg of string ]) result
 val mac_length : int
 (** Length in bytes of the MAC appended to an authenticated packet (4 + 20). *)
 
-val digest : key -> string -> string
-(** [digest key msg] is the first 20 bytes of [HASH(key.secret ^ msg)]. *)
-
 val append_into : key -> Slice_bstr.t -> unit
 (** [append_into key bstr] writes the [key_id] (offset 48) and the digest of the
     first 48 bytes (offset 52) into [bstr], which must be at least

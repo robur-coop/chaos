@@ -56,61 +56,68 @@ let of_cli spec =
       Ok { id; algo; secret }
   | _ -> Error (`Msg "Expected ID:ALGO:HEX")
 
-(* Full keyed hash HASH(secret || msg) (20 bytes for SHA1, 32 for SHA256). *)
-let digest_full key msg =
+(* Re-used scratch buffers on the hot path: the 48-byte header to hash and the
+   raw digest. Sharing module-level buffers is safe because [append_into] and
+   [check] contain no await point, so in Miou's cooperative single domain they
+   never run concurrently nor reenter. Avoiding per-packet allocations keeps the
+   minor GC out of the [t3]/[t2] timestamp window (less delay jitter). *)
+let header_buf = Bytes.create 48
+let digest_buf = Bytes.create 32 (* longest supported digest (SHA256) *)
+
+(* HASH(secret || header_buf) into [digest_buf]; returns the digest length.
+   Allocates only the hash context. *)
+let compute_digest key =
   match key.algo with
   | SHA1 ->
       Digestif.SHA1.(
-        to_raw_string (digesti_string (fun f -> f key.secret; f msg)))
+        get_into_bytes
+          (feed_bytes (feed_string (init ()) key.secret) header_buf)
+          digest_buf);
+      20
   | SHA256 ->
       Digestif.SHA256.(
-        to_raw_string (digesti_string (fun f -> f key.secret; f msg)))
+        get_into_bytes
+          (feed_bytes (feed_string (init ()) key.secret) header_buf)
+          digest_buf);
+      32
 
-(* What we put on the wire: the digest truncated to 20 bytes (NTPv4, RFC 7822). *)
-let digest key msg =
-  let raw = digest_full key msg in
-  if String.length raw <= _DIGEST_LEN then raw else String.sub raw 0 _DIGEST_LEN
-
-(* Constant-time comparison over the common length (length is not secret). *)
-let equal_ct a b =
-  String.length a = String.length b
-  &&
-  let acc = ref 0 in
-  String.iteri
-    (fun i c -> acc := !acc lor (Char.code c lxor Char.code b.[i]))
-    a;
-  !acc = 0
-
-(* Append [key_id] (offset 48) and the digest (offset 52) to a [Slice_bstr]
-   whose first 48 bytes already hold the NTP header. *)
+(* Append [key_id] (offset 48) and the 20-byte (NTPv4-truncated) digest
+   (offset 52) to a [Slice_bstr] whose first 48 bytes hold the NTP header. *)
 let append_into key bstr =
-  let header = String.init 48 (fun i -> Slice_bstr.get bstr i) in
-  let d = digest key header in
+  Slice_bstr.blit_to_bytes bstr ~src_off:0 header_buf ~dst_off:0 ~len:48;
+  ignore (compute_digest key);
   Slice_bstr.set_int32_be bstr 48 (Int32.of_int key.id);
-  String.iteri (fun i c -> Slice_bstr.set bstr (52 + i) c) d
+  for i = 0 to _DIGEST_LEN - 1 do
+    Slice_bstr.set bstr (52 + i) (Bytes.get digest_buf i)
+  done
 
 type check = No_mac | Valid of int | Invalid
 
+(* Constant-time comparison of [digest_buf.[0..len-1]] with [str.[off..off+len-1]]. *)
+let equal_digest str ~off len =
+  let acc = ref 0 in
+  for i = 0 to len - 1 do
+    acc :=
+      !acc lor (Char.code (Bytes.get digest_buf i) lxor Char.code str.[off + i])
+  done;
+  !acc = 0
+
 (* Parse the trailing MAC of a received packet and verify it over the first 48
-   bytes. *)
+   bytes. A peer may send the full digest (e.g. chrony in NTPv3 with SHA256 sends
+   32 bytes) or a 20-byte NTPv4-truncated one, so compare over the received
+   length against the full hash. *)
 let check t str =
   let n = String.length str in
   if n <= 48 then No_mac
   else if n < 48 + 4 + _MIN_DIGEST_LEN then Invalid
   else
     let key_id = Int32.to_int (String.get_int32_be str 48) land 0xffffffff in
-    let recv = String.sub str 52 (n - 52) in
     match find t key_id with
     | None -> Invalid
     | Some key ->
-        (* Compare against the FULL hash truncated to the received length: a peer
-           may send the full digest (e.g. chrony in NTPv3 with SHA256 sends 32
-           bytes) or a 20-byte NTPv4-truncated one. *)
-        let expected = digest_full key (String.sub str 0 48) in
-        let m = String.length recv in
-        if
-          m >= _MIN_DIGEST_LEN
-          && m <= String.length expected
-          && equal_ct (String.sub expected 0 m) recv
-        then Valid key_id
+        Bytes.blit_string str 0 header_buf 0 48;
+        let dlen = compute_digest key in
+        let m = n - 52 in
+        if m >= _MIN_DIGEST_LEN && m <= dlen && equal_digest str ~off:52 m then
+          Valid key_id
         else Invalid

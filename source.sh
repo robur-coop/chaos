@@ -23,3 +23,4 @@
 [ ! -d "vendors/multipart_form" ] && opam source multipart_form --dir vendors/multipart_form
 [ ! -d "vendors/utcp" ] && opam source utcp --dir vendors/utcp
 [ ! -d "vendors/zarith" ] && opam source zarith --dir vendors/zarith
+[ ! -d "vendors/mkernel-memtrace" ] && opam source mkernel-memtrace --dir vendors/mkernel-memtrace
