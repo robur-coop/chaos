@@ -258,7 +258,7 @@ let find_best_sample_index t ~off times_back =
   (* With the value of skew that has been computed, see which of the samples
      offers the tightest bound on root distance. *)
   if t.n_samples > 0 then begin
-    let best_root_distance = ref 0. and best_index = ref 0 in
+    let best_root_distance = ref Float.max_float and best_index = ref 0 in
     for i = 0 to t.n_samples - 1 do
       let j = get_buf_index t i in
       let elapsed = Float.neg (Float.Array.get times_back (off + i)) in
@@ -398,7 +398,7 @@ let accumulate ?(tags= Logs.Tag.empty) t sample =
     && (t.n_samples == _MAX_SAMPLES || t.n_samples == t.max_samples)
   then prune t 1;
   if
-    t.n_samples > 1
+    t.n_samples >= 1
     && Ptime.compare t.sample_times.(t.last_sample) sample.Sample.time >= 0
   then begin
     Log.warn (fun m ->
