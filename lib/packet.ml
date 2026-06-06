@@ -43,7 +43,9 @@ let[@inline] ptime_to_int64 t =
      decoded then re-encoded is bit-identical, which the strict originate-echo
      check of clients like chronyd requires). *)
   let sub_psec = Int64.rem tv_psec 1_000_000_000_000L in
-  let fraction = Int64.of_float (Float.round (Int64.to_float sub_psec /. frac)) in
+  let fraction =
+    Int64.of_float (Float.round (Int64.to_float sub_psec /. frac))
+  in
   let fraction = Int64.min fraction mask in
   let v = Int64.(shift_left (of_int tv_sec) 32) in
   Int64.(logor v fraction)

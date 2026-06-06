@@ -27,11 +27,13 @@ let algo_of_string s =
   match String.uppercase_ascii s with
   | "SHA1" -> Ok SHA1
   | "SHA256" -> Ok SHA256
-  | _ -> Error (`Msg (Fmt.str "Unknown MAC algorithm %S (use SHA1 or SHA256)" s))
+  | _ ->
+      Error (`Msg (Fmt.str "Unknown MAC algorithm %S (use SHA1 or SHA256)" s))
 
 let secret_of_hex h =
   let n = String.length h in
-  if n = 0 || n mod 2 <> 0 then Error (`Msg "Key must be a non-empty even-length hex string")
+  if n = 0 || n mod 2 <> 0 then
+    Error (`Msg "Key must be a non-empty even-length hex string")
   else
     try
       let b = Bytes.create (n / 2) in

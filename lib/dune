@@ -1,8 +1,28 @@
 (library
  (name chaos)
- (modules chaos stats sample source packet sched select clock reference sequence server auth)
+ (modules
+  chaos
+  stats
+  sample
+  source
+  packet
+  sched
+  select
+  clock
+  reference
+  sequence
+  server
+  auth)
  (public_name chaos)
- (libraries mirage-crypto-rng duration slice.bstr ipaddr fmt ptime logs digestif)
+ (libraries
+  mirage-crypto-rng
+  duration
+  slice.bstr
+  ipaddr
+  fmt
+  ptime
+  logs
+  digestif)
  (foreign_stubs
   (language c)
   (names regress)))
@@ -13,5 +33,5 @@
  (public_name chaos.tscclock)
  (libraries ptime)
  (foreign_stubs
-   (language c)
-   (names tscclock)))
+  (language c)
+  (names tscclock)))

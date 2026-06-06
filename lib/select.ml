@@ -176,9 +176,9 @@ let leap_of scored =
   let votes = ref 0 and ins = ref 0 and del = ref 0 in
   List.iter
     (function
-      | _, `Ok (source, _) ->
+      | _, `Ok (source, _) -> (
           incr votes;
-          (match Source.leap source with
+          match Source.leap source with
           | 1 -> incr ins
           | 2 -> incr del
           | _ -> ())
@@ -299,7 +299,8 @@ let select now sources0 =
   let selected_ok =
     let fn = function
       | `Ok (source, info) when Source.selected source -> Some (source, info)
-      | _ -> None in
+      | _ -> None
+    in
     List.find_map fn qualified
   in
   let sel_distance =
@@ -315,27 +316,34 @@ let select now sources0 =
      >= 1.0), but only if it or the reference has a fresh sample (so a sample is
      scored exactly once); otherwise the score is simply the inverse distance. *)
   let scored =
-    let fn elt = match elt with
+    let fn elt =
+      match elt with
       | `Ok (source, info) ->
-        let distance = distance_of ~min_stratum source info in
-        let score = match sel_distance with
-          | Some sel_distance when Source.score_pending source || sel_pending ->
-            let value = Source.sel_score source *. (sel_distance /. distance) in
-            let value = Float.max 1.0 value in
-            Source.set_sel_score source value;
-            value
-          | Some _ -> Source.sel_score source
-          | None ->
-            let value = 1.0 /. distance in
-            Source.set_sel_score source value;
-            value in
-        (score, elt)
+          let distance = distance_of ~min_stratum source info in
+          let score =
+            match sel_distance with
+            | Some sel_distance when Source.score_pending source || sel_pending
+              ->
+                let value =
+                  Source.sel_score source *. (sel_distance /. distance)
+                in
+                let value = Float.max 1.0 value in
+                Source.set_sel_score source value;
+                value
+            | Some _ -> Source.sel_score source
+            | None ->
+                let value = 1.0 /. distance in
+                Source.set_sel_score source value;
+                value
+          in
+          (score, elt)
       | elt ->
-        let source = source_of elt in
-        Source.set_sel_score source 1.0;
-        (* A non-selectable source starts penalised when it becomes Ok again. *)
-        Source.set_distant source _DISTANT_PENALTY;
-        (1.0, elt) in
+          let source = source_of elt in
+          Source.set_sel_score source 1.0;
+          (* A non-selectable source starts penalised when it becomes Ok again. *)
+          Source.set_distant source _DISTANT_PENALTY;
+          (1.0, elt)
+    in
     List.map fn qualified
   in
   (* The pending samples have now been accounted for in the scores. *)
@@ -366,8 +374,8 @@ let select now sources0 =
   in
   let chosen =
     if switch then
-      if Source.updates max_source = 0 then None
-        (* Wait until the new reference can actually update the clock. *)
+      if Source.updates max_source = 0 then
+        None (* Wait until the new reference can actually update the clock. *)
       else begin
         Log.debug (fun m ->
             let addr, port = Source.server max_source in

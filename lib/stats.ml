@@ -87,7 +87,8 @@ let _MAX_ASYMMETRY = 0.5
 let _MIN_ASYMMETRY_RUN = 10
 let _MAX_ASYMMETRY_RUN = 1000
 
-let source = Logs.Tag.def ~doc:"NTP source" "ntp.source" @@ fun ppf t ->
+let source =
+  Logs.Tag.def ~doc:"NTP source" "ntp.source" @@ fun ppf t ->
   let ipaddr, port = t.source in
   let uid = t.ref_id in
   Fmt.pf ppf "%a:%d:%04x" Ipaddr.pp ipaddr port uid
@@ -153,8 +154,7 @@ let reset t =
   t.asymmetry_run <- 0;
   t.asymmetry <- 0.
 
-let set_ref_id t ~ref_id =
-  t.ref_id <- ref_id
+let set_ref_id t ~ref_id = t.ref_id <- ref_id
 
 let get_buf_index t idx =
   (t.last_sample + (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) - t.n_samples + idx + 1)
@@ -198,9 +198,9 @@ let estimate_asymmetry times_back offsets delays n asymmetry asymmetry_run =
   if
     Regress.multiple_regress times_back delays offsets n a = false
     || begin
-         let a = Int64.float_of_bits (Bytes.get_int64_ne a 0) in
-         a *. float_of_int asymmetry_run < 0.
-       end
+      let a = Int64.float_of_bits (Bytes.get_int64_ne a 0) in
+      a *. float_of_int asymmetry_run < 0.
+    end
   then `Stop (0.0, 0)
   else begin
     let a = Int64.float_of_bits (Bytes.get_int64_ne a 0) in
@@ -300,7 +300,7 @@ let prune t new_oldest =
 (* This function runs the linear regression operation on the data. It finds the
    set of most recent samples that give the tightest confidence interval for the
    frequency, and truncates the register down to that number of samples. *)
-let regression ?(tags= Logs.Tag.empty) t =
+let regression ?(tags = Logs.Tag.empty) t =
   let times_back = Float.Array.make (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) 0.0 in
   let offsets = Float.Array.make (_MAX_SAMPLES * _REGRESS_RUNS_RATIO) 0.0 in
   let peer_distances = Float.Array.make _MAX_SAMPLES 0.0 in
@@ -392,7 +392,7 @@ let regression ?(tags= Logs.Tag.empty) t =
     end
   end
 
-let accumulate ?(tags= Logs.Tag.empty) t sample =
+let accumulate ?(tags = Logs.Tag.empty) t sample =
   if
     t.n_samples > 0
     && (t.n_samples == _MAX_SAMPLES || t.n_samples == t.max_samples)
@@ -403,7 +403,8 @@ let accumulate ?(tags= Logs.Tag.empty) t sample =
   then begin
     Log.warn (fun m ->
         let tags = Logs.Tag.add source t tags in
-        m ~tags "Out of order sample detected, discarding history for %d" t.ref_id);
+        m ~tags "Out of order sample detected, discarding history for %d"
+          t.ref_id);
     reset t
   end;
   let n = (t.last_sample + 1) land 127 in
@@ -478,7 +479,7 @@ type info = {
   ; last_sample_ago: float
 }
 
-let get_selection_data ?(tags= Logs.Tag.empty) t now =
+let get_selection_data ?(tags = Logs.Tag.empty) t now =
   if t.n_samples <= 0 then None
   else if t.regression_ok then begin
     let i = get_runsbuf_index t t.best_single_sample in
@@ -532,7 +533,7 @@ type data = {
   ; root_dispersion: float
 }
 
-let get_tracking_data ?(tags= Logs.Tag.empty) t =
+let get_tracking_data ?(tags = Logs.Tag.empty) t =
   if t.n_samples <= 0 then Fmt.invalid_arg "Stats.get_tracking_data";
   let i = get_runsbuf_index t t.best_single_sample in
   let j = get_buf_index t t.best_single_sample in

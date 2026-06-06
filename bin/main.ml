@@ -1,32 +1,33 @@
 let () = Printexc.record_backtrace true
+let ( let@ ) finally fn = Fun.protect ~finally fn
 
 let rec clean_up_sleepers orphans =
   match Miou.care orphans with
   | None -> ()
   | Some None -> ()
-  | Some (Some prm) -> begin
-      match Miou.await prm with
+  | Some (Some prm) ->
+      begin match Miou.await prm with
       | Ok () -> clean_up_sleepers orphans
       | Error exn ->
           Logs.err (fun m ->
               m "A sleeper terminated with an exception: %s"
                 (Printexc.to_string exn));
           clean_up_sleepers orphans
-    end
+      end
 
 let rec terminate orphans =
   match Miou.care orphans with
   | None -> ()
   | Some None -> Miou.yield (); terminate orphans
-  | Some (Some prm) -> begin
-      match Miou.await prm with
+  | Some (Some prm) ->
+      begin match Miou.await prm with
       | Ok () -> terminate orphans
       | Error exn ->
           Logs.err (fun m ->
               m "A promise terminated with an exception: %s"
                 (Printexc.to_string exn));
           terminate orphans
-    end
+      end
 
 module Wk : sig
   type t
@@ -55,7 +56,9 @@ end = struct
 
   let interrupt t =
     match t.waiter with
-    | Some c -> t.waiter <- None; ignore (Miou.Computation.try_return c ())
+    | Some c ->
+        t.waiter <- None;
+        ignore (Miou.Computation.try_return c ())
     | None -> t.pending <- true
 
   let idle t =
@@ -81,7 +84,9 @@ let new_listener keys orphans udp actives wk port =
       let prm =
         Miou.async ~orphans @@ fun () ->
         let buf = Bytes.create 0x7ff in
-        let len, (peer, _peer_port) = Mnet.UDP.recvfrom udp ~port ~trigger buf in
+        let len, (peer, _peer_port) =
+          Mnet.UDP.recvfrom udp ~port ~trigger buf
+        in
         let str = Bytes.sub_string buf 0 len in
         match Chaos.Packet.decode str with
         | Ok pkt ->
@@ -111,7 +116,9 @@ let clean_up_listeners keys udpv4 orphans rxs actives wk =
         match Miou.await prm with
         | Ok (`Packet (ts, pkt, auth, src, src_port)) ->
             Hashtbl.remove actives src_port;
-            List.iter (Chaos.Source.rx_received ~src ~src_port ~ts ~auth pkt) rxs
+            List.iter
+              (Chaos.Source.rx_received ~src ~src_port ~ts ~auth pkt)
+              rxs
         | Ok (`Unknown port) -> Hashtbl.remove actives port
         | Error Miou.Cancelled -> ()
         | Error exn ->
@@ -138,10 +145,9 @@ let rec step udp wk sleepers rxs server =
         Chaos.Source.dst_unreachable tx
       in
       let now () = Chaos.Clock.read_cooked_time () in
-      (* If a key is configured for this source, sign the request: the MAC is
-         appended after the 48-byte header (computed over it). *)
       let key = Chaos.Source.key server in
-      let len = match key with None -> 48 | Some _ -> 48 + Chaos.Auth.mac_length in
+      let len = Option.map (fun _ -> 48 + Chaos.Auth.mac_length) key in
+      let len = Option.value ~default:48 len in
       (* NOTE(dinosaure): [fn] is executed **after** the discovery
          of routes. When the new NTPv4 packet is sent, we have the most accurate
          time of transmission from the perspective of the unikernel. *)
@@ -149,8 +155,7 @@ let rec step udp wk sleepers rxs server =
         ts := Chaos.Packet.encode_into ~now pkt bstr;
         Option.iter (fun k -> Chaos.Auth.append_into k bstr) key
       in
-      Mnet.UDP.sendfn udp ~src_port ~dst ~port ~len fn
-      |> Result.fold ~ok ~error;
+      Mnet.UDP.sendfn udp ~src_port ~dst ~port ~len fn |> Result.fold ~ok ~error;
       Wk.interrupt wk;
       step udp wk sleepers (rx :: rxs) server
   | `Await -> `Continue (rxs, server)
@@ -164,14 +169,17 @@ let rec step udp wk sleepers rxs server =
       in
       step udp wk sleepers rxs server
 
-let rec clean_up orphans = match Miou.care orphans with
+let rec clean_up orphans =
+  match Miou.care orphans with
   | None | Some None -> ()
   | Some (Some prm) ->
-    begin match Miou.await prm with
-    | Ok () -> clean_up orphans
-    | Error exn ->
-      Logs.err (fun m -> m "Unexpected exception from a task: %s" (Printexc.to_string exn));
-      clean_up orphans end
+      begin match Miou.await prm with
+      | Ok () -> clean_up orphans
+      | Error exn ->
+          Logs.err (fun m ->
+              m "Unexpected exception from a task: %s" (Printexc.to_string exn));
+          clean_up orphans
+      end
 
 let handler ~orphans keys udp srv reference raw rx peer peer_port =
   try
@@ -180,40 +188,43 @@ let handler ~orphans keys udp srv reference raw rx peer peer_port =
     let fn req =
       match Chaos.Server.handle srv reference ~auth ~rx ~peer req with
       | Some (resp, sign) ->
-        (* Sign the response with the request's key when it was authenticated. *)
-        let sign_key = Option.bind sign (Chaos.Auth.find keys) in
-        let len =
-          match sign_key with
-          | None -> 48
-          | Some _ -> 48 + Chaos.Auth.mac_length
-        in
-        let fn () =
-          let now () = Chaos.Clock.read_cooked_time () in
-          let fn bstr =
-            ignore (Chaos.Packet.encode_into ~now resp bstr);
-            Option.iter (fun k -> Chaos.Auth.append_into k bstr) sign_key
+          (* Sign the response with the request's key when it was authenticated. *)
+          let sign_key = Option.bind sign (Chaos.Auth.find keys) in
+          let len =
+            match sign_key with
+            | None -> 48
+            | Some _ -> 48 + Chaos.Auth.mac_length
           in
-          Mnet.UDP.sendfn udp ~src_port:123 ~dst:peer ~port:peer_port ~len fn
-          |> ignore in
-        ignore (Miou.async ~orphans fn)
-      | None -> () in
+          let fn () =
+            let now () = Chaos.Clock.read_cooked_time () in
+            let fn bstr =
+              ignore (Chaos.Packet.encode_into ~now resp bstr);
+              Option.iter (fun k -> Chaos.Auth.append_into k bstr) sign_key
+            in
+            Mnet.UDP.sendfn udp ~src_port:123 ~dst:peer ~port:peer_port ~len fn
+            |> ignore
+          in
+          ignore (Miou.async ~orphans fn)
+      | None -> ()
+    in
     Result.iter fn pkt
   with exn ->
-    Logs.warn (fun m -> m "Discarding a request from %a: %s" Ipaddr.pp peer
-      (Printexc.to_string exn))
+    Logs.warn (fun m ->
+        m "Discarding a request from %a: %s" Ipaddr.pp peer
+          (Printexc.to_string exn))
 
 (* How often to compact the heap (and return memory to the host) to keep the
    footprint bounded over a multi-year uptime. *)
 let _COMPACT_INTERVAL = 3600.0
 
-let[@inline "always"] compact last_compact = function
+let[@inline always] compact last_compact = function
   | [] ->
-    let raw = Chaos.Clock.read_raw_time () in
-    if Ptime.(Span.to_float_s (diff raw !last_compact)) > _COMPACT_INTERVAL
-    then begin
-      Gc.compact ();
-      last_compact := Chaos.Clock.read_raw_time ();
-    end
+      let raw = Chaos.Clock.read_raw_time () in
+      if Ptime.(Span.to_float_s (diff raw !last_compact)) > _COMPACT_INTERVAL
+      then begin
+        Gc.compact ();
+        last_compact := Chaos.Clock.read_raw_time ()
+      end
   | _ -> ()
 
 let run metrics keyspecs ckey udp servers =
@@ -235,11 +246,16 @@ let run metrics keyspecs ckey udp servers =
       clean_up orphans;
       let trigger = Miou.Trigger.create () in
       let rx = ref Ptime.min in
-      assert (Miou.Trigger.on_signal trigger rx () @@ fun _trigger rx () -> rx := Chaos.Clock.read_cooked_time ());
-      let len, (peer, peer_port) = Mnet.UDP.recvfrom udp ~trigger ~port:123 buf in
+      assert (
+        Miou.Trigger.on_signal trigger rx () @@ fun _trigger rx () ->
+        rx := Chaos.Clock.read_cooked_time ());
+      let len, (peer, peer_port) =
+        Mnet.UDP.recvfrom udp ~trigger ~port:123 buf
+      in
       let pkt = Bytes.sub_string buf 0 len in
       handler ~orphans keys udp srv reference pkt !rx peer peer_port;
-      serve orphans in
+      serve orphans
+    in
     serve (Miou.orphans ())
   in
   let prm1 =
@@ -273,7 +289,7 @@ let run metrics keyspecs ckey udp servers =
               server data
           in
           Option.iter fn res;
-          compact last_compact rxs;
+          (compact [@inlined]) last_compact rxs;
           Wk.idle wk;
           go rxs (List.rev servers)
     in
@@ -334,101 +350,28 @@ module Append = struct
     Mkernel.map fn Mkernel.[ block name ]
 end
 
-let run _ (cidr, gateway, ipv6) metrics keys ckey servers =
+let devices (cidr, gateway, ipv6) metrics =
   let metrics =
     match metrics with
     | None -> Mkernel.const None
     | Some name -> Append.of_block name
   in
-  Mkernel.(run [ Mnet.stack ~name:"service" ?gateway ~ipv6 cidr; metrics; Mkernel_memtrace.block "memtrace" ])
+  let open Mkernel in
+  [
+    Mnet.stack ~name:"service" ?gateway ~ipv6 cidr; metrics
+  ; Mkernel_memtrace.block "memtrace"
+  ]
+
+let run _ mnet metrics keys ckey servers =
+  Mkernel.run (devices mnet metrics)
   @@ fun (daemon, _tcpv4, udp) metrics _memtrace () ->
   let rng = Mirage_crypto_rng_mkernel.initialize (module RNG) in
-  let finally () =
-    Mirage_crypto_rng_mkernel.kill rng;
-    Mnet.kill daemon
-  in
-  Fun.protect ~finally @@ fun () ->
+  let@ () = fun () -> Mirage_crypto_rng_mkernel.kill rng in
+  let@ () = fun () -> Mnet.kill daemon in
   let _ = Tscclock.init () in
   run metrics keys ckey udp servers
 
 open Cmdliner
-
-let output_options = "OUTPUT OPTIONS"
-let verbosity = Logs_cli.level ~docs:output_options ()
-let renderer = Fmt_cli.style_renderer ~docs:output_options ()
-
-let utf_8 =
-  let doc = "Allow binaries to emit UTF-8 characters." in
-  Arg.(value & opt bool true & info [ "with-utf-8" ] ~doc)
-
-let t0 = Mkernel.clock_monotonic ()
-let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
-let neg fn = fun x -> not (fn x)
-
-let reporter sources ppf =
-  let re = Option.map Re.compile sources in
-  let print src =
-    let some re = (neg List.is_empty) (Re.matches re (Logs.Src.name src)) in
-    Option.fold ~none:true ~some re
-  in
-  let report src level ~over k msgf =
-    let k _ = over (); k () in
-    let pp header _tags k ppf fmt =
-      let t1 = Mkernel.clock_monotonic () in
-      let delta = Float.of_int (t1 - t0) in
-      let delta = delta /. 1_000_000_000. in
-      Fmt.kpf k ppf
-        ("[+%a][%a]%a[%a]: " ^^ fmt ^^ "\n%!")
-        Fmt.(styled `Blue (fmt "%04.04f"))
-        delta
-        Fmt.(styled `Cyan int)
-        (Stdlib.Domain.self () :> int)
-        Logs_fmt.pp_header (level, header)
-        Fmt.(styled `Magenta string)
-        (Logs.Src.name src)
-    in
-    match (level, print src) with
-    | Logs.Debug, false -> k ()
-    | _, true | _ -> msgf @@ fun ?header ?tags fmt -> pp header tags k ppf fmt
-  in
-  { Logs.report }
-
-let regexp =
-  let parser str =
-    match Re.Pcre.re str with
-    | re -> Ok (str, `Re re)
-    | exception _ -> error_msgf "Invalid PCRegexp: %S" str
-  in
-  let pp ppf (str, _) = Fmt.string ppf str in
-  Arg.conv (parser, pp)
-
-let sources =
-  let doc = "A regexp (PCRE syntax) to identify which log we print." in
-  let open Arg in
-  value & opt_all regexp [ ("", `None) ] & info [ "l" ] ~doc ~docv:"REGEXP"
-
-let setup_sources = function
-  | [ (_, `None) ] -> None
-  | res ->
-      let res = List.map snd res in
-      let res =
-        List.fold_left
-          (fun acc -> function `Re re -> re :: acc | _ -> acc)
-          [] res
-      in
-      Some (Re.alt res)
-
-let setup_sources = Term.(const setup_sources $ sources)
-
-let setup_logs utf_8 style_renderer sources level =
-  Option.iter (Fmt.set_style_renderer Fmt.stdout) style_renderer;
-  Fmt.set_utf_8 Fmt.stdout utf_8;
-  Logs.set_level level;
-  Logs.set_reporter (reporter sources Fmt.stdout);
-  Option.is_none level
-
-let setup_logs =
-  Term.(const setup_logs $ utf_8 $ renderer $ setup_sources $ verbosity)
 
 let metrics =
   let doc = "Save metrics into the given block device." in
@@ -442,20 +385,31 @@ let servers =
   value & opt_all ipaddr [] & info [ "server" ] ~doc ~docv:"IPv4"
 
 let keys =
-  let doc = "A symmetric authentication key, as ID:ALGO:HEX (ALGO is SHA1 or SHA256)." in
+  let doc =
+    "A symmetric authentication key, as ID:ALGO:HEX (ALGO is SHA1 or SHA256)."
+  in
   let pp ppf (k : Chaos.Auth.key) = Fmt.pf ppf "%d" k.Chaos.Auth.id in
   let key = Arg.conv (Chaos.Auth.of_cli, pp) in
   let open Arg in
   value & opt_all key [] & info [ "key" ] ~doc ~docv:"ID:ALGO:HEX"
 
 let ckey =
-  let doc = "Identifier of the key used to authenticate requests to all upstream servers." in
+  let doc =
+    "Identifier of the key used to authenticate requests to all upstream \
+     servers."
+  in
   let open Arg in
   value & opt (some int) None & info [ "client-key" ] ~doc ~docv:"ID"
 
 let term =
   let open Term in
-  const run $ setup_logs $ Mnet_cli.setup $ metrics $ keys $ ckey $ servers
+  const run
+  $ Mnet_cli.setup_logs
+  $ Mnet_cli.setup
+  $ metrics
+  $ keys
+  $ ckey
+  $ servers
 
 let cmd =
   let info = Cmd.info "chaos" in

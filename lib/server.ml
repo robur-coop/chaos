@@ -40,7 +40,8 @@ let allow t peer mono =
       Hashtbl.replace t.clients peer { tokens= _RATE_BURST -. 1.0; last= mono };
       true
 
-let server_flags ~leap = (leap lsl 6) lor (4 lsl 3) lor 4 (* LI | NTPv4 | server *)
+let server_flags ~leap =
+  (leap lsl 6) lor (4 lsl 3) lor 4 (* LI | NTPv4 | server *)
 
 let kod_response request =
   {
@@ -59,14 +60,14 @@ let kod_response request =
 
 let reply ~reference ~rx request =
   let {
-        Reference.synchronised= _
-      ; leap
-      ; stratum
-      ; ref_id
-      ; ref_time
-      ; root_delay
-      ; root_dispersion
-      } =
+    Reference.synchronised= _
+  ; leap
+  ; stratum
+  ; ref_id
+  ; ref_time
+  ; root_delay
+  ; root_dispersion
+  } =
     Reference.get_params reference rx
   in
   {

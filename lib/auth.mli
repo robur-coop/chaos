@@ -28,5 +28,5 @@ type check =
   | Invalid  (** a MAC is present but unknown key or wrong digest *)
 
 val check : t -> string -> check
-(** [check t raw] parses the trailing MAC of a received packet [raw] and verifies
-    it against the keystore over the first 48 bytes. *)
+(** [check t raw] parses the trailing MAC of a received packet [raw] and
+    verifies it against the keystore over the first 48 bytes. *)

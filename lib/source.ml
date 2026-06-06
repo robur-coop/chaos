@@ -110,7 +110,8 @@ let distant t = t.distant
 let set_distant t v = t.distant <- v
 let reachability_size t = Reachability.size t.reachability
 
-let source = Logs.Tag.def ~doc:"NTP source" "ntp.source" @@ fun ppf t ->
+let source =
+  Logs.Tag.def ~doc:"NTP source" "ntp.source" @@ fun ppf t ->
   Fmt.pf ppf "%a:%d" Ipaddr.pp t.dst t.port
 
 let pp_error ppf = function
@@ -133,10 +134,10 @@ exception Timeout
 exception Discard
 exception Route_unreachable
 
-let[@inline never] invalid_transition ?(tags= Logs.Tag.empty) ~state t =
+let[@inline never] invalid_transition ?(tags = Logs.Tag.empty) ~state t =
   Logs.err (fun m ->
-    let tags = Logs.Tag.add source t tags in
-    m ~tags "Invalid transition (%s): %a" state pp t);
+      let tags = Logs.Tag.add source t tags in
+      m ~tags "Invalid transition (%s): %a" state pp t);
   assert false
 
 let log2_to_double l =
@@ -150,7 +151,9 @@ let average_and_diff ~earlier ~later =
   let diff = Ptime.diff later earlier in
   (* NOTE(dinosaure): [of_float_s] fails only if we give an NaN value or
       something bigger than ~2'941'758 years... *)
-  let half = Option.get (Ptime.Span.of_float_s (Ptime.Span.to_float_s diff /. 2.)) in
+  let half =
+    Option.get (Ptime.Span.of_float_s (Ptime.Span.to_float_s diff /. 2.))
+  in
   match Ptime.add_span earlier half with
   | Some avg -> (avg, diff)
   | None ->
@@ -281,9 +284,11 @@ let adjust_poll t adj =
    not cap it at the server's announced poll. *)
 let get_transmit_poll t = t.local_poll
 
-let get_transmit_delay ?(tags= Logs.Tag.empty) t =
+let get_transmit_delay ?(tags = Logs.Tag.empty) t =
   let poll_to_use = get_transmit_poll t in
-  Logs.debug (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "poll-to-use: %d" poll_to_use);
+  Logs.debug (fun m ->
+      let tags = Logs.Tag.add source t tags in
+      m ~tags "poll-to-use: %d" poll_to_use);
   log2_to_double poll_to_use
 
 let stratum ?(default = 0) t =
@@ -357,14 +362,14 @@ let to_sample t (t1, t4) pkt =
   let testC = check_delay_dev_ratio t m.time m.offset m.peer_delay in
   if testA && testB && testC then Some m else None
 
-let end_of_roundtrip ?(tags= Logs.Tag.empty) t t1 t4 pkt auth =
+let end_of_roundtrip ?(tags = Logs.Tag.empty) t t1 t4 pkt auth =
   (* If a key is configured for this source, require the response to carry a
      valid MAC with that key (chrony's [NAU_CheckResponseAuth]). Without a key,
      accept regardless of any MAC. *)
   let authentication =
-    let fn k = match auth with
-      | Auth.Valid kid -> kid = k.Auth.id
-      | _ -> false in
+    let fn k =
+      match auth with Auth.Valid kid -> kid = k.Auth.id | _ -> false
+    in
     Option.map fn t.key |> Option.value ~default:true
   in
   if (not authentication) && valid_packet ~t1 pkt then
@@ -374,8 +379,12 @@ let end_of_roundtrip ?(tags= Logs.Tag.empty) t t1 t4 pkt auth =
           t.dst t.port);
   match (valid_packet ~t1 pkt && authentication, synced_packet pkt) with
   | true, true ->
-      Logs.debug (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "%a" Packet.pp_meta pkt);
-      Logs.debug (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "%a" Packet.pp pkt);
+      Logs.debug (fun m ->
+          let tags = Logs.Tag.add source t tags in
+          m ~tags "%a" Packet.pp_meta pkt);
+      Logs.debug (fun m ->
+          let tags = Logs.Tag.add source t tags in
+          m ~tags "%a" Packet.pp pkt);
       Stats.set_ref_id t.stats ~ref_id:pkt.Packet.ref_id;
       t.remote_poll <- Some pkt.Packet.poll;
       t.stratum <- Some (Int.max pkt.Packet.stratum 0);
@@ -417,13 +426,15 @@ let end_of_roundtrip ?(tags= Logs.Tag.empty) t t1 t4 pkt auth =
       if valid then t.remote_poll <- Some pkt.Packet.poll;
       Reachability.update t.reachability (valid && synced)
 
-let record_t1 _trigger ?(tags= Logs.Tag.empty) t (tx, rx) =
+let record_t1 _trigger ?(tags = Logs.Tag.empty) t (tx, rx) =
   let result = Sched.Computation.peek tx in
   let result = Option.get result in
   match (t.state, result) with
   | Invalid _, _ -> ()
   | End_of_round_trip, Error Discard ->
-      Logs.debug (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "Roundtrip discarded by the receiver ")
+      Logs.debug (fun m ->
+          let tags = Logs.Tag.add source t tags in
+          m ~tags "Roundtrip discarded by the receiver ")
   | (Sleep _ | Tx_sent _ | End_of_round_trip), _ ->
       invalid_transition ~state:"record_t1" t
   | New_round_trip _, Ok t1 -> t.state <- Tx_sent { t1 }
@@ -431,7 +442,9 @@ let record_t1 _trigger ?(tags= Logs.Tag.empty) t (tx, rx) =
       end_of_roundtrip t t1 t4 pkt auth;
       t.state <- End_of_round_trip
   | _, Error Route_unreachable ->
-      Logs.warn (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "Server unreachable");
+      Logs.warn (fun m ->
+          let tags = Logs.Tag.add source t tags in
+          m ~tags "Server unreachable");
       Reachability.update t.reachability false;
       t.state <- Invalid Server_unreachable;
       (* NOTE(dinosaure): here, [Computation.cancel] will execute [record_t4]
@@ -441,10 +454,10 @@ let record_t1 _trigger ?(tags= Logs.Tag.empty) t (tx, rx) =
   | _, Error Discard -> ()
   | _, Error exn ->
       Logs.err (fun m ->
-        let tags = Logs.Tag.add source t tags in
+          let tags = Logs.Tag.add source t tags in
           m ~tags "Unexpected exception: %s" (Printexc.to_string exn))
 
-let record_t4 _trigger ?(tags= Logs.Tag.empty) t (rx, tx) =
+let record_t4 _trigger ?(tags = Logs.Tag.empty) t (rx, tx) =
   let result = Sched.Computation.peek rx in
   let result = Option.get result in
   match (t.state, result) with
@@ -462,7 +475,8 @@ let record_t4 _trigger ?(tags= Logs.Tag.empty) t (rx, tx) =
       Reachability.update t.reachability false;
       Logs.warn (fun m ->
           let tags = Logs.Tag.add source t tags in
-          m ~tags "Server timeout (after %d roundtrip(s))" t.number_of_roundtrips);
+          m ~tags "Server timeout (after %d roundtrip(s))"
+            t.number_of_roundtrips);
       (* NOTE(dinosaure): here, [Sched.Computation.cancel] will execute
          [record_t1] iff was not signaled by the user. By this way, we clean-up
          everything.
@@ -474,7 +488,7 @@ let record_t4 _trigger ?(tags= Logs.Tag.empty) t (rx, tx) =
           let tags = Logs.Tag.add source t tags in
           m ~tags "Unexpected exception: %s" (Printexc.to_string exn))
 
-let new_round_trip ?(tags= Logs.Tag.empty) trigger t () =
+let new_round_trip ?(tags = Logs.Tag.empty) trigger t () =
   match t.state with
   | Invalid _ -> ()
   | Sleep { sleeper; ns= _ } ->
@@ -511,7 +525,10 @@ let new_round_trip ?(tags= Logs.Tag.empty) trigger t () =
         let recv = { src= t.dst; port; comp } in
         t.state <- New_round_trip { port; pkt; send; recv }
       end
-      else Logs.warn (fun m -> let tags = Logs.Tag.add source t tags in m ~tags "Unexpected trigger")
+      else
+        Logs.warn (fun m ->
+            let tags = Logs.Tag.add source t tags in
+            m ~tags "Unexpected trigger")
   | New_round_trip _ | Tx_sent _ | Rx_received _ | End_of_round_trip ->
       invalid_transition ~state:"new_round_trip" t
 
@@ -521,7 +538,7 @@ let float_sec_to_nsec v =
   let ns = sec *. 1e9 in
   Float.to_int (ns +. frac_ns)
 
-let handle ?(tags= Logs.Tag.empty) t =
+let handle ?(tags = Logs.Tag.empty) t =
   match t.state with
   | Invalid err -> `Error err
   | New_round_trip { port; pkt; send; recv } -> `Send (port, pkt, send, recv)

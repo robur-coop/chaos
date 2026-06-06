@@ -133,7 +133,8 @@ let is_offset_ok t offset =
   end
   else if Float.abs offset > t.max_offset then begin
     Log.warn (fun m ->
-        m "Adjustment of %.3f seconds exceeds the allowed maximum of %.3f \
+        m
+          "Adjustment of %.3f seconds exceeds the allowed maximum of %.3f \
            seconds (ignored)"
           (Float.neg offset) t.max_offset);
     if t.max_offset_ignore > 0 then
@@ -144,8 +145,17 @@ let is_offset_ok t offset =
 
 let write_log =
   let last_sys_offset = ref 0.0 in
-  fun t (server : Ipaddr.t * int) stratum now combined_sources freq offset
-      offset_sd uncorrected_offset orig_root_distance ->
+  fun t
+    (server : Ipaddr.t * int)
+    stratum
+    now
+    combined_sources
+    freq
+    offset
+    offset_sd
+    uncorrected_offset
+    orig_root_distance
+  ->
     match t.logs with
     | None -> ()
     | Some ppf ->
@@ -156,8 +166,8 @@ let write_log =
         let now = Fmt.str "%a" (Ptime.pp_human ()) now in
         let leap = leap_codes.(t.our_leap_status land 0x3) in
         Format.fprintf ppf
-          "%s %-15s %2d %10.3f %10.3f %10.3e %c %2d %10.3e %10.3e %10.3e %10.3e \
-           %10.3e\n"
+          "%s %-15s %2d %10.3f %10.3f %10.3e %c %2d %10.3e %10.3e %10.3e \
+           %10.3e %10.3e\n"
           now addr stratum freq (1e6 *. t.our_skew) offset leap combined_sources
           offset_sd uncorrected_offset t.our_root_delay root_dispersion
           max_error
