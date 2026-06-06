@@ -151,8 +151,24 @@ static uint64_t rdsysns() {
 #endif
 }
 
-static uint64_t rdns() { return tsc2ns(rdtsc()); }
+/* Re-base often enough that (tsc - base) stays small, so the [double]
+   multiplication in [tsc2ns] keeps sub-nanosecond resolution over a multi-year
+   uptime. ~2^40 cycles is ~366 s at 3 GHz. The re-base is self-contained: it
+   carries the extrapolated [ns] forward without ever asking the host clock, so
+   it is transparent to the NTP-disciplined [Chaos.Clock] layered on top. */
+#define REBASE_CYCLES (1ULL << 40)
 
+static uint64_t rdns() {
+  uint64_t tsc = rdtsc();
+  uint64_t ns = tsc2ns(tsc);
+  if (tsc - _base.tsc >= REBASE_CYCLES)
+    tsc_save(tsc, ns, 0, _base.ns_per_tsc);
+  return ns;
+}
+
+/* Here, we collect several rdsysns between rdtsc calls in order to select two
+   "good" values (rdsysns "sandwiched" between very close rdtsc calls) for the
+   purpose of calculating the frequency. */
 static int tsc_sync_time(uint64_t *tsc_out, uint64_t *ns_out) {
 #ifdef _MSC_VER
   const int N = 15;
@@ -198,6 +214,7 @@ retry:
   }
 
   (*tsc_out) = (tsc[best] + tsc[best - 1]) >> 1;
+  /* NOTE(dinosaure): [>> 1] is like [/ 2], we would like to have the middle. */
   (*ns_out) = ns[best];
 
   return 0;
