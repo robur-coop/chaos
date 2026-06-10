@@ -1,3 +1,4 @@
+let _MAX_UNREACHABLE_RUN = 8
 let src = Logs.Src.create "chaos.state"
 
 module Log = (val Logs.src_log src : Logs.LOG)
@@ -71,6 +72,9 @@ and t = {
   ; mutable poll_score: float (* Score of current local poll *)
   ; mutable local_poll: int (* Log2 of polling interval at our end *)
   ; reachability: Reachability.t
+  ; mutable unreachable_run: int
+        (* Consecutive failed round-trips (timeouts / unusable replies); reset on
+         a good sample. Used to declare a persistently unreachable source dead. *)
   ; key: Auth.key option
         (* Symmetric key used to authenticate exchanges with this source (the
          client signs its requests and requires authenticated responses). *)
@@ -97,6 +101,13 @@ let stats t = t.stats
 let is_reachable t = Reachability.is_reachable t.reachability
 let reachability t = t.reachability
 let key t = t.key
+let is_dead t = t.unreachable_run >= _MAX_UNREACHABLE_RUN
+
+let set_reachable t reachable =
+  Reachability.update t.reachability reachable;
+  if reachable then t.unreachable_run <- 0
+  else t.unreachable_run <- succ t.unreachable_run
+
 let leap t = t.leap
 let sel_score t = t.sel_score
 let set_sel_score t v = t.sel_score <- v
@@ -390,7 +401,7 @@ let end_of_roundtrip ?(tags = Logs.Tag.empty) t t1 t4 pkt auth =
       t.stratum <- Some (Int.max pkt.Packet.stratum 0);
       t.leap <- (pkt.Packet.flags lsr 6) land 0x3;
       t.number_of_roundtrips <- t.number_of_roundtrips + 1;
-      Reachability.update t.reachability true;
+      set_reachable t true;
       let sample = to_sample t (t1, t4) pkt in
       let fn sample =
         let open Sample in
@@ -424,7 +435,7 @@ let end_of_roundtrip ?(tags = Logs.Tag.empty) t t1 t4 pkt auth =
       Option.iter fn sample
   | valid, synced ->
       if valid then t.remote_poll <- Some pkt.Packet.poll;
-      Reachability.update t.reachability (valid && synced)
+      set_reachable t (valid && synced)
 
 let record_t1 _trigger ?(tags = Logs.Tag.empty) t (tx, rx) =
   let result = Sched.Computation.peek tx in
@@ -445,7 +456,7 @@ let record_t1 _trigger ?(tags = Logs.Tag.empty) t (tx, rx) =
       Logs.warn (fun m ->
           let tags = Logs.Tag.add source t tags in
           m ~tags "Server unreachable");
-      Reachability.update t.reachability false;
+      set_reachable t false;
       t.state <- Invalid Server_unreachable;
       (* NOTE(dinosaure): here, [Computation.cancel] will execute [record_t4]
          iff was not signaled by the user. By this way, we clean-up everything.
@@ -472,11 +483,11 @@ let record_t4 _trigger ?(tags = Logs.Tag.empty) t (rx, tx) =
       invalid_transition ~state:"record_t4" t
   | _, Error Timeout ->
       t.state <- End_of_round_trip;
-      Reachability.update t.reachability false;
-      Logs.warn (fun m ->
+      set_reachable t false;
+      Log.warn (fun m ->
           let tags = Logs.Tag.add source t tags in
-          m ~tags "Server timeout (after %d roundtrip(s))"
-            t.number_of_roundtrips);
+          m ~tags "Server (%a:%d) timeout (after %d roundtrip(s))" Ipaddr.pp
+            t.dst t.port t.number_of_roundtrips);
       (* NOTE(dinosaure): here, [Sched.Computation.cancel] will execute
          [record_t1] iff was not signaled by the user. By this way, we clean-up
          everything.
@@ -539,35 +550,37 @@ let float_sec_to_nsec v =
   Float.to_int (ns +. frac_ns)
 
 let handle ?(tags = Logs.Tag.empty) t =
-  match t.state with
-  | Invalid err -> `Error err
-  | New_round_trip { port; pkt; send; recv } -> `Send (port, pkt, send, recv)
-  | Sleep _ | Tx_sent _ | Rx_received _ -> `Await
-  | End_of_round_trip when Stats.samples t.stats < 6 ->
-      (* NOTE(dinosaure): we would like to speed up the initial synchronisation.
+  if is_dead t then `Error Server_unreachable
+  else
+    match t.state with
+    | Invalid err -> `Error err
+    | New_round_trip { port; pkt; send; recv } -> `Send (port, pkt, send, recv)
+    | Sleep _ | Tx_sent _ | Rx_received _ -> `Await
+    | End_of_round_trip when Stats.samples t.stats < 6 ->
+        (* NOTE(dinosaure): we would like to speed up the initial synchronisation.
          So we would like to start with a burst of 4-8 requests in order to make
          the first update of the clock sooner.
 
          TODO(dinosaure): we probably can set an option and formalize better the
          burst mode (known as iburst for chrony). *)
-      let sleeper = Sched.Trigger.create () in
-      let nsec (* 2sec *) = 2_000_000_000 in
-      Logs.debug (fun m ->
-          let tags = Logs.Tag.add source t tags in
-          m ~tags "Sleep %a" Duration.pp (Int64.of_int nsec));
-      t.state <- Sleep { sleeper; ns= nsec };
-      assert (Sched.Trigger.on_signal sleeper t () new_round_trip);
-      `Sleep (sleeper, nsec)
-  | End_of_round_trip ->
-      let sleeper = Sched.Trigger.create () in
-      let sec = get_transmit_delay t in
-      let nsec = float_sec_to_nsec sec in
-      Logs.debug (fun m ->
-          let tags = Logs.Tag.add source t tags in
-          m ~tags "Sleep %a" Duration.pp (Int64.of_int nsec));
-      t.state <- Sleep { sleeper; ns= nsec };
-      assert (Sched.Trigger.on_signal sleeper t () new_round_trip);
-      `Sleep (sleeper, nsec)
+        let sleeper = Sched.Trigger.create () in
+        let nsec (* 2sec *) = 2_000_000_000 in
+        Logs.debug (fun m ->
+            let tags = Logs.Tag.add source t tags in
+            m ~tags "Sleep %a" Duration.pp (Int64.of_int nsec));
+        t.state <- Sleep { sleeper; ns= nsec };
+        assert (Sched.Trigger.on_signal sleeper t () new_round_trip);
+        `Sleep (sleeper, nsec)
+    | End_of_round_trip ->
+        let sleeper = Sched.Trigger.create () in
+        let sec = get_transmit_delay t in
+        let nsec = float_sec_to_nsec sec in
+        Logs.debug (fun m ->
+            let tags = Logs.Tag.add source t tags in
+            m ~tags "Sleep %a" Duration.pp (Int64.of_int nsec));
+        t.state <- Sleep { sleeper; ns= nsec };
+        assert (Sched.Trigger.on_signal sleeper t () new_round_trip);
+        `Sleep (sleeper, nsec)
 
 let on_slew t ~raw:_ ~cooked ~dfreq ~doffset =
   Stats.slew_samples t.stats cooked dfreq doffset
@@ -607,6 +620,7 @@ let make ?(port = 123) ?key dst =
     ; poll_score= 0.
     ; local_poll= 6 (* SRC_DEFAULT_MINPOLL = 6 *)
     ; reachability= Reachability.make ()
+    ; unreachable_run= 0
     ; key
     ; stratum= None
     ; leap= 0

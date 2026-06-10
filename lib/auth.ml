@@ -15,6 +15,7 @@ type t = { keys: (int, key) Hashtbl.t }
 let _DIGEST_LEN = 20 (* NTP_MAX_V4_MAC_LENGTH - 4 *)
 let _MIN_DIGEST_LEN = 16 (* NTP_MIN_MAC_LENGTH - 4 *)
 let mac_length = 4 + _DIGEST_LEN
+let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 
 let make keys =
   let tbl = Hashtbl.create (max 1 (List.length keys)) in
@@ -51,12 +52,12 @@ let of_cli spec =
       let* id =
         match int_of_string_opt id with
         | Some id -> Ok id
-        | None -> Error (`Msg (Fmt.str "Invalid key id %S" id))
+        | None -> error_msgf "Invalid key id %S" id
       in
       let* algo = algo_of_string algo in
       let* secret = secret_of_hex hex in
       Ok { id; algo; secret }
-  | _ -> Error (`Msg "Expected ID:ALGO:HEX")
+  | _ -> error_msgf "Expected ID:ALGO:HEX"
 
 (* Re-used scratch buffers on the hot path: the 48-byte header to hash and the
    raw digest. Sharing module-level buffers is safe because [append_into] and
@@ -71,16 +72,16 @@ let digest_buf = Bytes.create 32 (* longest supported digest (SHA256) *)
 let compute_digest key =
   match key.algo with
   | SHA1 ->
-      Digestif.SHA1.(
-        get_into_bytes
-          (feed_bytes (feed_string (init ()) key.secret) header_buf)
-          digest_buf);
+      let open Digestif.SHA1 in
+      get_into_bytes
+        (feed_bytes (feed_string (init ()) key.secret) header_buf)
+        digest_buf;
       20
   | SHA256 ->
-      Digestif.SHA256.(
-        get_into_bytes
-          (feed_bytes (feed_string (init ()) key.secret) header_buf)
-          digest_buf);
+      let open Digestif.SHA256 in
+      get_into_bytes
+        (feed_bytes (feed_string (init ()) key.secret) header_buf)
+        digest_buf;
       32
 
 (* Append [key_id] (offset 48) and the 20-byte (NTPv4-truncated) digest

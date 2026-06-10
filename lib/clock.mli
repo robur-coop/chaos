@@ -26,9 +26,7 @@ val read_cooked_time : unit -> Ptime.t
     The base used is updated every 1,000 seconds. At this interval, all
     corrections are compensated for in the offset value. *)
 
-val adjust : Ptime.t -> float
-(** [adjust v] is equivalent to the correction (see {!val:read_cooked_time})
-    applied to the system time. *)
+val cook : Ptime.t -> Ptime.t
 
 val pending_correction : Ptime.t -> float
 (** [pending_correction v] is the residual (not-yet-baked) part of the
@@ -44,6 +42,6 @@ val precision_as_log : unit -> int
 (** The NTP [precision] byte: [log2] of {!val:precision_as_quantum} rounded to a
     signed integer. Advertised by the NTP server in its responses. *)
 
-val accumulate_freq_and_offset : dfreq:float -> doffset:float -> float -> unit
+val accumulate_freq_and_offset : dfreq:float -> doffset:float -> unit
 (** Performe the combination of modifying the frequency and applying a slew, in
     one easy step. *)

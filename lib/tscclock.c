@@ -16,13 +16,13 @@ _Alignas(128) struct base _base = {0};
 atomic_int_least32_t _seq = 0;
 char _padding[128 - ((sizeof(struct base) + sizeof(_seq)) % 128)];
 
-static void tsc_save(uint64_t base_tsc, uint64_t trust_ns, uint64_t base_ns_err,
+static void tsc_save(uint64_t base_tsc, uint64_t trust_ns,
                      double new_ns_per_sec) {
   uint32_t seq0 = atomic_load_explicit(&_seq, memory_order_relaxed);
   atomic_store_explicit(&_seq, seq0 + 1, memory_order_release);
   atomic_signal_fence(memory_order_acq_rel);
   _base.tsc = base_tsc;
-  _base.ns = trust_ns + base_ns_err;
+  _base.ns = trust_ns;
   _base.ns_per_tsc = new_ns_per_sec;
   atomic_signal_fence(memory_order_acq_rel);
   atomic_store_explicit(&_seq, seq0 + 2, memory_order_release);
@@ -151,18 +151,13 @@ static uint64_t rdsysns() {
 #endif
 }
 
-/* Re-base often enough that (tsc - base) stays small, so the [double]
-   multiplication in [tsc2ns] keeps sub-nanosecond resolution over a multi-year
-   uptime. ~2^40 cycles is ~366 s at 3 GHz. The re-base is self-contained: it
-   carries the extrapolated [ns] forward without ever asking the host clock, so
-   it is transparent to the NTP-disciplined [Chaos.Clock] layered on top. */
 #define REBASE_CYCLES (1ULL << 40)
 
 static uint64_t rdns() {
   uint64_t tsc = rdtsc();
   uint64_t ns = tsc2ns(tsc);
   if (tsc - _base.tsc >= REBASE_CYCLES)
-    tsc_save(tsc, ns, 0, _base.ns_per_tsc);
+    tsc_save(tsc, ns, _base.ns_per_tsc);
   return ns;
 }
 
@@ -238,7 +233,7 @@ static int tsc_init(uint64_t init_calibrate_ns) {
   tsc_sync_time(&delayed_tsc, &delayed_ns);
   double init_ns_per_tsc =
       (double)(delayed_ns - base_ns) / (delayed_tsc - base_tsc);
-  tsc_save(base_tsc, base_ns, 0, init_ns_per_tsc);
+  tsc_save(base_tsc, base_ns, init_ns_per_tsc);
   return 0;
 }
 
@@ -249,18 +244,6 @@ static int tsc_init(uint64_t init_calibrate_ns) {
 #define __unit value unit __attribute__((unused))
 
 uint64_t caml_utime_rdns(__unit) { return (rdns()); }
-
-double caml_utime_set_freq(double new_ns_per_tsc) {
-  uint32_t seq0 = atomic_load_explicit(&_seq, memory_order_relaxed);
-  double old_ns_per_sec;
-  atomic_store_explicit(&_seq, seq0 + 1, memory_order_release);
-  atomic_signal_fence(memory_order_acq_rel);
-  old_ns_per_sec = _base.ns_per_tsc;
-  _base.ns_per_tsc = new_ns_per_tsc;
-  atomic_signal_fence(memory_order_acq_rel);
-  atomic_store_explicit(&_seq, seq0 + 2, memory_order_release);
-  return old_ns_per_sec;
-}
 
 CAMLprim value caml_utime_init(uint64_t init_calibrate_ns) {
   switch (tsc_init(init_calibrate_ns)) {
@@ -287,19 +270,4 @@ CAMLprim value caml_utime_init(uint64_t init_calibrate_ns) {
   }
 
   return Val_unit;
-}
-
-double caml_utime_get_freq(__unit) {
-  uint32_t seq0, seq1;
-  double ns_per_tsc;
-
-  do {
-    seq0 = atomic_load_explicit(&_seq, memory_order_acquire);
-    atomic_signal_fence(memory_order_acq_rel);
-    ns_per_tsc = _base.ns_per_tsc;
-    atomic_signal_fence(memory_order_acq_rel);
-    seq1 = atomic_load_explicit(&_seq, memory_order_acquire);
-  } while (seq0 != seq1 || seq0 & 1);
-
-  return (1.0 / ns_per_tsc);
 }

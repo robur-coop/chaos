@@ -180,10 +180,7 @@ let update t server ~stratum ?(combined_sources = 0) ?(leap = 0) data =
      update, not the whole cumulative software correction. [now] still uses the
      total correction so the cooked time stays exact. *)
   let pending = Clock.pending_correction raw in
-  let total_corr = Clock.adjust raw in
-  let total_corr = Option.get (Ptime.Span.of_float_s total_corr) in
-  let now = Ptime.add_span raw total_corr in
-  let now = Option.get now in
+  let now = Clock.cook raw in
   let elapsed = Ptime.(Span.to_float_s (diff now data.ref_time)) in
   let offset = data.offset +. (elapsed *. data.frequency) in
   (* Get new estimates of the frequency and skew including the new data *)
@@ -205,9 +202,7 @@ let update t server ~stratum ?(combined_sources = 0) ?(leap = 0) data =
     t.our_root_dispersion <- data.root_dispersion;
     t.our_frequency_sd <- data.frequency_sd;
     t.our_offset_sd <- data.offset_sd;
-    let corr_rate = 0.0 in
-    (* TODO(dinosaure): [corr_rate] is useless for [Clock] but it can be interesting to calculate it. *)
-    Clock.accumulate_freq_and_offset ~dfreq:freq ~doffset:offset corr_rate;
+    Clock.accumulate_freq_and_offset ~dfreq:freq ~doffset:offset;
     write_log t server stratum now combined_sources (Clock.frequency ()) offset
       data.offset_sd pending orig_root_distance
   end

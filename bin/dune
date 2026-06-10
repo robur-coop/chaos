@@ -8,6 +8,10 @@
   mkernel
   mnet
   mnet-cli
+  mnet-dns
+  dns
+  domain-name
+  ipaddr
   mirage-crypto-rng-mkernel
   mkernel-memtrace
   cmdliner

@@ -24,6 +24,12 @@ val server : t -> Ipaddr.t * int
 val handle : ?tags:Logs.Tag.set -> t -> event
 val stats : t -> Stats.t
 val is_reachable : t -> bool
+
+val is_dead : t -> bool
+(** [is_dead t] is [true] once the source has been unreachable (timeouts or
+    unusable replies) for too many consecutive round-trips. Such a source is
+    declared dead and should be dropped (and, for a pool, replaced). *)
+
 val reachability : t -> Reachability.t
 val stratum : ?default:int -> t -> int
 
