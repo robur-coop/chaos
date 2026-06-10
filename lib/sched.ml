@@ -1,3 +1,6 @@
+(* This code is the same as Miou but it permits to use Chaos with another
+   scheduler and be sure that some operations are really synchronous. *)
+
 module Trigger = struct
   type state =
     | Signaled

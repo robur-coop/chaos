@@ -143,6 +143,7 @@ let is_offset_ok t offset =
   end
   else true
 
+(*
 let write_log =
   let last_sys_offset = ref 0.0 in
   fun t
@@ -171,8 +172,9 @@ let write_log =
           now addr stratum freq (1e6 *. t.our_skew) offset leap combined_sources
           offset_sd uncorrected_offset t.our_root_delay root_dispersion
           max_error
+*)
 
-let update t server ~stratum ?(combined_sources = 0) ?(leap = 0) data =
+let update t server ~stratum ?combined_sources:(_ = 0) ?(leap = 0) data =
   let open Stats in
   let raw = Clock.read_raw_time () in
   (* [pending] is the residual correction reported as "Rem. corr." (like
@@ -202,9 +204,7 @@ let update t server ~stratum ?(combined_sources = 0) ?(leap = 0) data =
     t.our_root_dispersion <- data.root_dispersion;
     t.our_frequency_sd <- data.frequency_sd;
     t.our_offset_sd <- data.offset_sd;
-    Clock.accumulate_freq_and_offset ~dfreq:freq ~doffset:offset;
-    write_log t server stratum now combined_sources (Clock.frequency ()) offset
-      data.offset_sd pending orig_root_distance
+    Clock.accumulate_freq_and_offset ~dfreq:freq ~doffset:offset
   end
 
 (* Reference parameters exposed to the NTP server side, mirroring chrony's

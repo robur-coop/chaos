@@ -289,11 +289,20 @@ let combine (sel_idx, sel_source, sel_info, sel_data) sources =
 
 let select now sources0 =
   let ( let* ) = Option.bind in
+  (* Reset the falseticker verdicts: only a successful interval search below can
+     re-flag a source, so without a quorum nobody is considered a falseticker. *)
+  List.iter (fun s -> Source.set_falseticker s false) sources0;
   let qualified = qualify ~now sources0 in
   let* lo, hi = search_interval qualified in
   Logs.debug (fun m -> m "interval lo=%f hi=%f" lo hi);
   (* TODO(dinosaure): filter sources against orphan stratum *)
   let qualified = in_interval ~lo ~hi qualified in
+  (* Set falsetickers. *)
+  let fn = function
+    | `Falseticker (src, _) -> Source.set_falseticker src true
+    | _ -> ()
+  in
+  List.iter fn qualified;
   let* min_stratum = find_minimum_stratum qualified in
   (* The current reference source, if it is still selectable. *)
   let selected_ok =

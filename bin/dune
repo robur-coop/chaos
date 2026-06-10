@@ -52,4 +52,4 @@
  (action
   (with-stdout-to
    manifest.json
-   (run %{exe:main.exe} --ipv4=0.0.0.0/24 --metrics=metrics))))
+   (run %{exe:main.exe} --ipv4=0.0.0.0/24))))

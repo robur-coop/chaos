@@ -1,4 +1,11 @@
 let _MAX_UNREACHABLE_RUN = 8
+let _MAX_FALSETICKER_RUN = 8
+let _MAX_OFFSET = 4294967296.0
+let _MIN_ENDOFTIME_DISTANCE = 365 * 24 * 3600
+let _MAX_SERVER_INTERVAL = 4.0
+let _MAX_STRATUM = 16
+let _INVALID_STRATUM = 0
+let _MAX_DISPERSION = 16.0
 let src = Logs.Src.create "chaos.state"
 
 module Log = (val Logs.src_log src : Logs.LOG)
@@ -10,7 +17,7 @@ type tx = Ptime.t Sched.Computation.t
 type rx = {
     src: Ipaddr.t
   ; port: int
-  ; comp: (Ptime.t * Packet.t * Auth.check) Sched.Computation.t
+  ; comp: (Ptime.t * Packet.t * Auth.result) Sched.Computation.t
 }
 
 type sleeper = Sched.Trigger.t
@@ -49,17 +56,16 @@ type event =
   [ `Send of int * Packet.t * tx * rx
   | `Await
   | `Sleep of sleeper * int
-  | `Error of error ]
+  | `Falseticker
+  | `Server_unreachable ]
 
 and state =
   | Sleep of { sleeper: sleeper; ns: int }
   | New_round_trip of { port: int; pkt: Packet.t; send: tx; recv: rx }
   | Tx_sent of { t1: Ptime.t }
-  | Rx_received of { t4: Ptime.t; pkt: Packet.t; auth: Auth.check }
+  | Rx_received of { t4: Ptime.t; pkt: Packet.t; auth: Auth.result }
   | End_of_round_trip
-  | Invalid of error
-
-and error = Server_unreachable
+  | Server_unreachable
 
 and t = {
     dst: Ipaddr.t
@@ -75,6 +81,12 @@ and t = {
   ; mutable unreachable_run: int
         (* Consecutive failed round-trips (timeouts / unusable replies); reset on
          a good sample. Used to declare a persistently unreachable source dead. *)
+  ; mutable is_falseticker: bool
+        (* Latest selection verdict: this source's interval disagrees with the
+         majority (cf. chrony's SRC_FALSETICKER). Set by [Select]. *)
+  ; mutable falseticker_run: int
+        (* Consecutive usable samples taken while flagged a falseticker; reset on
+         a truthful sample. Used to declare a persistent falseticker dead. *)
   ; key: Auth.key option
         (* Symmetric key used to authenticate exchanges with this source (the
          client signs its requests and requires authenticated responses). *)
@@ -101,7 +113,10 @@ let stats t = t.stats
 let is_reachable t = Reachability.is_reachable t.reachability
 let reachability t = t.reachability
 let key t = t.key
-let is_dead t = t.unreachable_run >= _MAX_UNREACHABLE_RUN
+
+let is_dead t =
+  t.unreachable_run >= _MAX_UNREACHABLE_RUN
+  || t.falseticker_run >= _MAX_FALSETICKER_RUN
 
 let set_reachable t reachable =
   Reachability.update t.reachability reachable;
@@ -119,14 +134,12 @@ let score_pending t = t.score_pending
 let set_score_pending t v = t.score_pending <- v
 let distant t = t.distant
 let set_distant t v = t.distant <- v
+let set_falseticker t v = t.is_falseticker <- v
 let reachability_size t = Reachability.size t.reachability
 
 let source =
   Logs.Tag.def ~doc:"NTP source" "ntp.source" @@ fun ppf t ->
   Fmt.pf ppf "%a:%d" Ipaddr.pp t.dst t.port
-
-let pp_error ppf = function
-  | Server_unreachable -> Fmt.string ppf "Server unreachable"
 
 let pp_state ppf = function
   | Sleep { ns; _ } -> Fmt.pf ppf "Sleep:%dns" ns
@@ -136,7 +149,7 @@ let pp_state ppf = function
   | Rx_received { t4; _ } ->
       Fmt.pf ppf "Rx_received:%a" (Ptime.pp_human ~frac_s:9 ()) t4
   | End_of_round_trip -> Fmt.pf ppf "End_of_round_trip"
-  | Invalid err -> Fmt.pf ppf "%a" pp_error err
+  | Server_unreachable -> Fmt.string ppf "Server_unreachable"
 
 let pp ppf t = Fmt.pf ppf "%a" pp_state t.state
 let server { dst; port; _ } = (dst, port)
@@ -172,13 +185,6 @@ let average_and_diff ~earlier ~later =
           m "Impossible to calculate the average between %a and %a" Ptime.pp
             earlier Ptime.pp later);
       assert false
-
-let _MAX_OFFSET = 4294967296.0
-let _MIN_ENDOFTIME_DISTANCE = 365 * 24 * 3600
-let _MAX_SERVER_INTERVAL = 4.0
-let _MAX_STRATUM = 16
-let _INVALID_STRATUM = 0
-let _MAX_DISPERSION = 16.0
 
 let is_time_offset_sane ts offset =
   if offset >= Float.neg _MAX_OFFSET && offset < _MAX_OFFSET then begin
@@ -378,9 +384,7 @@ let end_of_roundtrip ?(tags = Logs.Tag.empty) t t1 t4 pkt auth =
      valid MAC with that key (chrony's [NAU_CheckResponseAuth]). Without a key,
      accept regardless of any MAC. *)
   let authentication =
-    let fn k =
-      match auth with Auth.Valid kid -> kid = k.Auth.id | _ -> false
-    in
+    let fn k = match auth with `Valid kid -> kid = k.Auth.id | _ -> false in
     Option.map fn t.key |> Option.value ~default:true
   in
   if (not authentication) && valid_packet ~t1 pkt then
@@ -430,7 +434,12 @@ let end_of_roundtrip ?(tags = Logs.Tag.empty) t t1 t4 pkt auth =
         (* A new sample is available: count it for the reference-update gate and
            flag it so the selection applies it once to [sel_score]. *)
         t.updates <- t.updates + 1;
-        t.score_pending <- true
+        t.score_pending <- true;
+        (* Count usable samples taken while flagged a falseticker by the last
+           selection; a truthful sample resets it (cf. chrony replacing a
+           persistent SRC_FALSETICKER pool source). *)
+        if t.is_falseticker then t.falseticker_run <- t.falseticker_run + 1
+        else t.falseticker_run <- 0
       in
       Option.iter fn sample
   | valid, synced ->
@@ -441,7 +450,7 @@ let record_t1 _trigger ?(tags = Logs.Tag.empty) t (tx, rx) =
   let result = Sched.Computation.peek tx in
   let result = Option.get result in
   match (t.state, result) with
-  | Invalid _, _ -> ()
+  | Server_unreachable, _ -> ()
   | End_of_round_trip, Error Discard ->
       Logs.debug (fun m ->
           let tags = Logs.Tag.add source t tags in
@@ -457,7 +466,7 @@ let record_t1 _trigger ?(tags = Logs.Tag.empty) t (tx, rx) =
           let tags = Logs.Tag.add source t tags in
           m ~tags "Server unreachable");
       set_reachable t false;
-      t.state <- Invalid Server_unreachable;
+      t.state <- Server_unreachable;
       (* NOTE(dinosaure): here, [Computation.cancel] will execute [record_t4]
          iff was not signaled by the user. By this way, we clean-up everything.
        *)
@@ -472,7 +481,7 @@ let record_t4 _trigger ?(tags = Logs.Tag.empty) t (rx, tx) =
   let result = Sched.Computation.peek rx in
   let result = Option.get result in
   match (t.state, result) with
-  | Invalid _, _ -> ()
+  | Server_unreachable, _ -> ()
   | New_round_trip _, Ok (t4, pkt, auth) ->
       t.remote_poll <- Some pkt.Packet.poll;
       t.state <- Rx_received { t4; pkt; auth }
@@ -501,7 +510,7 @@ let record_t4 _trigger ?(tags = Logs.Tag.empty) t (rx, tx) =
 
 let new_round_trip ?(tags = Logs.Tag.empty) trigger t () =
   match t.state with
-  | Invalid _ -> ()
+  | Server_unreachable -> ()
   | Sleep { sleeper; ns= _ } ->
       if trigger == sleeper then begin
         let poll =
@@ -550,10 +559,11 @@ let float_sec_to_nsec v =
   Float.to_int (ns +. frac_ns)
 
 let handle ?(tags = Logs.Tag.empty) t =
-  if is_dead t then `Error Server_unreachable
+  if is_dead t && t.falseticker_run >= _MAX_FALSETICKER_RUN then `Falseticker
+  else if is_dead t then `Server_unreachable
   else
     match t.state with
-    | Invalid err -> `Error err
+    | Server_unreachable -> `Server_unreachable
     | New_round_trip { port; pkt; send; recv } -> `Send (port, pkt, send, recv)
     | Sleep _ | Tx_sent _ | Rx_received _ -> `Await
     | End_of_round_trip when Stats.samples t.stats < 6 ->
@@ -621,6 +631,8 @@ let make ?(port = 123) ?key dst =
     ; local_poll= 6 (* SRC_DEFAULT_MINPOLL = 6 *)
     ; reachability= Reachability.make ()
     ; unreachable_run= 0
+    ; is_falseticker= false
+    ; falseticker_run= 0
     ; key
     ; stratum= None
     ; leap= 0

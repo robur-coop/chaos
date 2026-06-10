@@ -422,7 +422,7 @@ let accumulate ?(tags = Logs.Tag.empty) t sample =
     Float.Array.set t.peer_delays n
       ((2. *. t.fixed_min_delay) -. Float.Array.get t.peer_delays n);
   if
-    t.n_samples != 0
+    t.n_samples = 0
     || Float.Array.get t.peer_delays n
        < Float.Array.get t.peer_delays t.min_delay_sample
   then t.min_delay_sample <- n;

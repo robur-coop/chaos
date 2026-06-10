@@ -7,9 +7,8 @@ type event =
   [ `Send of int * Packet.t * tx * rx
   | `Await
   | `Sleep of sleeper * int
-  | `Error of error ]
-
-and error
+  | `Falseticker
+  | `Server_unreachable ]
 
 module Reachability : sig
   type t
@@ -26,9 +25,11 @@ val stats : t -> Stats.t
 val is_reachable : t -> bool
 
 val is_dead : t -> bool
-(** [is_dead t] is [true] once the source has been unreachable (timeouts or
-    unusable replies) for too many consecutive round-trips. Such a source is
-    declared dead and should be dropped (and, for a pool, replaced). *)
+(** [is_dead t] is [true] once the source must be dropped (and, for a pool,
+    replaced), for either of two reasons mirroring chrony: it has been
+    unreachable (timeouts / unusable replies) for too many consecutive
+    round-trips, or it has been a {e falseticker} (its interval disagrees with
+    the majority, see {!set_falseticker}) for too many consecutive samples. *)
 
 val reachability : t -> Reachability.t
 val stratum : ?default:int -> t -> int
@@ -57,6 +58,11 @@ val distant : t -> int
 val set_distant : t -> int -> unit
 val reachability_size : t -> int
 
+val set_falseticker : t -> bool -> unit
+(** [set_falseticker t v] records the latest selection verdict for [t]: [v] is
+    [true] when its interval disagrees with the majority. Called by {!Select};
+    feeds the falseticker half of {!is_dead}. *)
+
 (*/*)
 
 val wake_up : sleeper -> unit
@@ -67,7 +73,7 @@ val rx_received :
      src:Ipaddr.t
   -> src_port:int
   -> ts:Ptime.t
-  -> auth:Auth.check
+  -> auth:Auth.result
   -> Packet.t
   -> rx
   -> unit

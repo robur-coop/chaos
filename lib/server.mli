@@ -9,7 +9,7 @@ val make : unit -> t
 val handle :
      t
   -> Reference.t
-  -> auth:Auth.check
+  -> auth:Auth.result
   -> rx:Ptime.t
   -> peer:Ipaddr.t
   -> Packet.t

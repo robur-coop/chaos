@@ -84,8 +84,6 @@ let compute_digest key =
         digest_buf;
       32
 
-(* Append [key_id] (offset 48) and the 20-byte (NTPv4-truncated) digest
-   (offset 52) to a [Slice_bstr] whose first 48 bytes hold the NTP header. *)
 let append_into key bstr =
   Slice_bstr.blit_to_bytes bstr ~src_off:0 header_buf ~dst_off:0 ~len:48;
   ignore (compute_digest key);
@@ -94,33 +92,30 @@ let append_into key bstr =
     Slice_bstr.set bstr (52 + i) (Bytes.get digest_buf i)
   done
 
-type check = No_mac | Valid of int | Invalid
-
-(* Constant-time comparison of [digest_buf.[0..len-1]] with [str.[off..off+len-1]]. *)
-let equal_digest str ~off len =
+(* TODO(dinosaure): we should add it into [Eqaf]. *)
+let equal str ~off len =
   let acc = ref 0 in
-  for i = 0 to len - 1 do
-    acc :=
-      !acc lor (Char.code (Bytes.get digest_buf i) lxor Char.code str.[off + i])
+  for idx = 0 to len - 1 do
+    let a = Char.code (Bytes.get digest_buf idx)
+    and b = Char.code str.[off + idx] in
+    acc := !acc lor (a lxor b)
   done;
   !acc = 0
 
-(* Parse the trailing MAC of a received packet and verify it over the first 48
-   bytes. A peer may send the full digest (e.g. chrony in NTPv3 with SHA256 sends
-   32 bytes) or a 20-byte NTPv4-truncated one, so compare over the received
-   length against the full hash. *)
+type result = [ `None | `Valid of int | `Invalid ]
+
 let check t str =
   let n = String.length str in
-  if n <= 48 then No_mac
-  else if n < 48 + 4 + _MIN_DIGEST_LEN then Invalid
+  if n <= 48 then `None
+  else if n < 48 + 4 + _MIN_DIGEST_LEN then `Invalid
   else
-    let key_id = Int32.to_int (String.get_int32_be str 48) land 0xffffffff in
-    match find t key_id with
-    | None -> Invalid
+    let kid = Int32.to_int (String.get_int32_be str 48) land 0xffffffff in
+    match find t kid with
+    | None -> `Invalid
     | Some key ->
         Bytes.blit_string str 0 header_buf 0 48;
         let dlen = compute_digest key in
         let m = n - 52 in
-        if m >= _MIN_DIGEST_LEN && m <= dlen && equal_digest str ~off:52 m then
-          Valid key_id
-        else Invalid
+        if m >= _MIN_DIGEST_LEN && m <= dlen && equal str ~off:52 m then
+          `Valid kid
+        else `Invalid

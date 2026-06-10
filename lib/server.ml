@@ -86,12 +86,12 @@ let reply ~reference ~rx request =
 
 let handle t reference ~auth ~rx ~peer request =
   match (Packet.flags_to_mode request.Packet.flags, auth) with
-  | _, Auth.Invalid ->
+  | _, `Invalid ->
       Log.debug (fun m ->
           m "dropping request with bad authentication from %a" Ipaddr.pp peer);
       None
   | `Client, _ ->
-      let sign = match auth with Auth.Valid kid -> Some kid | _ -> None in
+      let sign = match auth with `Valid kid -> Some kid | _ -> None in
       let mono = Clock.read_raw_time () in
       if allow t peer mono then Some (reply ~reference ~rx request, sign)
       else begin

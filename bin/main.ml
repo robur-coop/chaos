@@ -164,7 +164,7 @@ let rec step udp wk sleepers rxs server =
       Wk.interrupt wk;
       step udp wk sleepers (rx :: rxs) server
   | `Await -> `Continue (rxs, server)
-  | `Error _ -> `Stop rxs
+  | `Falseticker | `Server_unreachable -> `Stop rxs
   | `Sleep (sleeper, ns) ->
       let _ =
         Miou.async ~orphans:sleepers @@ fun () ->
@@ -274,12 +274,12 @@ let resolve dns range ckey now pool =
                 m "Cannot resolve %a: %s" Domain_name.pp domain_name msg)
       end
 
-let run dns range metrics keyspecs ckey udp servers =
+let run dns range keyspecs ckey udp servers =
   let _ = Chaos.Clock.init Tscclock.now in
   let wk = Wk.create () in
   let last_compact = ref (Chaos.Clock.read_raw_time ()) in
   let actives = Hashtbl.create 0x10 in
-  let reference = Chaos.Reference.make ?logs:metrics () in
+  let reference = Chaos.Reference.make () in
   let srv = Chaos.Server.make () in
   let keys = Chaos.Auth.make keyspecs in
   let ckey = Option.bind ckey (Chaos.Auth.find keys) in
@@ -363,68 +363,6 @@ let run dns range metrics keyspecs ckey udp servers =
 
 module RNG = Mirage_crypto_rng.Fortuna
 
-module Append = struct
-  type t = { tmp: Bstr.t; hdr: Bstr.t; mutable abs: int; mutable pos: int }
-
-  let make blk =
-    let pagesize = Mkernel.Block.pagesize blk in
-    { tmp= Bstr.create pagesize; hdr= Bstr.create pagesize; pos= 8; abs= 0 }
-
-  let next t =
-    t.pos <- 0;
-    Bstr.fill t.tmp ~off:0 '\000';
-    t.abs <- t.abs + 1
-
-  let set_header t blk real_length =
-    Mkernel.Block.atomic_read blk ~src_off:0 ~dst_off:0 t.hdr;
-    Bstr.set_int64_be t.hdr 0 (Int64.of_int real_length);
-    Mkernel.Block.atomic_write blk ~src_off:0 ~dst_off:0 t.hdr
-
-  let rec flush blk t = function
-    | _, _, 0 -> ()
-    | str, off, len ->
-        let to_write = Int.min len (Bstr.length t.tmp - t.pos) in
-        let src_off = off and dst_off = t.pos in
-        Bstr.blit_from_string str ~src_off t.tmp ~dst_off ~len:to_write;
-        t.pos <- t.pos + to_write;
-        let dst_off = t.abs * Bstr.length t.tmp in
-        Mkernel.Block.atomic_write blk ~src_off:0 ~dst_off t.tmp;
-        let real_length = (t.abs * Bstr.length t.tmp) + t.pos in
-        set_header t blk real_length;
-        if t.pos = Bstr.length t.tmp then next t;
-        flush blk t (str, off + to_write, len - to_write)
-
-  let append blk t str off len = flush blk t (str, off, len)
-
-  let format_of_block_device blk =
-    let t = make blk in
-    let out_string = append blk t in
-    let out_flush = ignore in
-    let out_width _str ~pos:_ ~len = len in
-    let newline = ("\n", 0, 1) in
-    let out_newline () = flush blk t newline in
-    let out_spaces len = flush blk t (String.make len '\x20', 0, len) in
-    let out_indent len = flush blk t (String.make len '\x09', 0, len) in
-    Format.formatter_of_out_functions
-      { out_string; out_flush; out_newline; out_spaces; out_indent; out_width }
-
-  let of_block name =
-    let fn blk () = Some (format_of_block_device blk) in
-    Mkernel.map fn Mkernel.[ block name ]
-end
-
-let devices (cidr, gateway, ipv6) metrics =
-  let metrics =
-    match metrics with
-    | None -> Mkernel.const None
-    | Some name -> Append.of_block name
-  in
-  let open Mkernel in
-  [
-    Mnet.stack ~name:"service" ?gateway ~ipv6 cidr; metrics
-  ; Mkernel_memtrace.block "memtrace"
-  ]
-
 let kill_tcp_if_possible ~nameservers:(proto, _) stack hed =
   match proto with
   | `Udp ->
@@ -432,7 +370,8 @@ let kill_tcp_if_possible ~nameservers:(proto, _) stack hed =
       Mnet.TCP.kill (Mnet.tcp stack)
   | `Tcp -> ()
 
-let run _ mnet happy_eyeballs nameservers metrics keys ckey servers range =
+let run _ (cidr, gateway, ipv6) happy_eyeballs nameservers keys ckey servers
+    range =
   let now = Mkernel.clock_monotonic () in
   let now = Int64.of_int now in
   let happy_eyeballs =
@@ -448,8 +387,8 @@ let run _ mnet happy_eyeballs nameservers metrics keys ckey servers range =
     Happy_eyeballs.create ~aaaa_timeout ~connect_delay ~connect_timeout
       ~resolve_timeout ~resolve_retries now
   in
-  Mkernel.run (devices mnet metrics)
-  @@ fun (stack, tcp, udp) metrics _memtrace () ->
+  Mkernel.(run [ Mnet.stack ~name:"service" ?gateway ~ipv6 cidr ])
+  @@ fun (stack, tcp, udp) () ->
   let rng = Mirage_crypto_rng_mkernel.initialize (module RNG) in
   let@ () = fun () -> Mirage_crypto_rng_mkernel.kill rng in
   let@ () = fun () -> Mnet.kill stack in
@@ -461,14 +400,9 @@ let run _ mnet happy_eyeballs nameservers metrics keys ckey servers range =
      also means that [Mnet_happy_eyeballs.connect] will no longer work. *)
   kill_tcp_if_possible ~nameservers stack hed;
   let _ = Tscclock.init () in
-  run dns range metrics keys ckey udp servers
+  run dns range keys ckey udp servers
 
 open Cmdliner
-
-let metrics =
-  let doc = "Save metrics into the given block device." in
-  let open Arg in
-  value & opt (some string) None & info [ "metrics" ] ~doc ~docv:"NAME"
 
 let range =
   let doc = "Number of servers (IP addresses) that Chaos uses as a source." in
@@ -532,7 +466,6 @@ let term =
   $ Mnet_cli.setup
   $ Mnet_cli.setup_happy_eyeballs
   $ Mnet_cli.setup_nameservers ()
-  $ metrics
   $ keys
   $ ckey
   $ servers

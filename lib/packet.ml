@@ -16,7 +16,8 @@ let ptime_of_int64 = function
          [tv_sec] is always non-negative, so the day/second split below never
          produces negative picoseconds (which would make [Ptime.v] raise). *)
       let ntp_sec =
-        Int64.to_int (Int64.logand (Int64.shift_right_logical value 32) mask)
+        let open Int64 in
+        to_int (logand (shift_right_logical value 32) mask)
       in
       let tv_sec = (ntp_sec - 2208988800) land 0xffffffff in
       let d = tv_sec / 86400 and rem_sec = tv_sec mod 86400 in
@@ -38,10 +39,6 @@ let[@inline] ptime_to_int64 t =
   let tv_sec = Option.value ~default:0 tv_sec in
   let tv_sec = tv_sec + 2208988800 in
   let _, tv_psec = Ptime.Span.to_d_ps span in
-  (* Sub-second picoseconds -> NTP 32-bit fraction, the exact inverse of the
-     decoding in [ptime_of_int64] (same rounding both ways so a timestamp
-     decoded then re-encoded is bit-identical, which the strict originate-echo
-     check of clients like chronyd requires). *)
   let sub_psec = Int64.rem tv_psec 1_000_000_000_000L in
   let fraction =
     Int64.of_float (Float.round (Int64.to_float sub_psec /. frac))

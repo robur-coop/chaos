@@ -27,21 +27,10 @@ val read_cooked_time : unit -> Ptime.t
     corrections are compensated for in the offset value. *)
 
 val cook : Ptime.t -> Ptime.t
-
 val pending_correction : Ptime.t -> float
-(** [pending_correction v] is the residual (not-yet-baked) part of the
-    correction returned by {!val:adjust}, i.e. only the frequency drift
-    accumulated since the last update. It is the analogue of chrony's
-    uncorrected offset and is meant for reporting (the "Rem. corr." column),
-    unlike {!val:adjust} which returns the whole cumulative correction. *)
-
 val precision_as_quantum : unit -> float
-(** Routine to read the system precision in terms of the actual time step. *)
-
 val precision_as_log : unit -> int
-(** The NTP [precision] byte: [log2] of {!val:precision_as_quantum} rounded to a
-    signed integer. Advertised by the NTP server in its responses. *)
 
 val accumulate_freq_and_offset : dfreq:float -> doffset:float -> unit
-(** Performe the combination of modifying the frequency and applying a slew, in
-    one easy step. *)
+(** It performs the combination of modifying the frequency and applying a slew,
+    and modifying the offset and applying a jump, in one easy step. *)
