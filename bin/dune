@@ -22,12 +22,6 @@
   (language c)
   (names manifest)))
 
-(executable
- (name trace)
- (enabled_if
-  (= %{context_name} "default"))
- (libraries fmt cmdliner))
-
 (rule
  (targets manifest.c)
  (enabled_if
