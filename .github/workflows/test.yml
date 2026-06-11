@@ -19,7 +19,7 @@ jobs:
             *.opam
       - name: Install dependencies
         run: opam install chaos --verbose-on=chaos
-      - name: Check immuable.hvt
-        run: file $(opam var bin)/immuable.hvt
+      - name: Check chaos.hvt
+        run: file $(opam var bin)/chaos.hvt
       - name: Run tests
         run: opam exec -- dune runtest -p chaos
