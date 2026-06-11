@@ -11,7 +11,7 @@ Like any [Solo5][solo5] unikernel, the resulting binary can be deployed using
 instructions on how to deploy Chaos. However, here is an example of how to
 deploy Chaos using [Docker][docker] (assuming [Aussi][aussi] is installed and
 registered as a "runtime"). The user needs to prepare two files (the
-[Dockerfile][./docker/Dockerfile] and the [solo5.json][./docker/solo5.json]
+[Dockerfile](./docker/Dockerfile) and the [solo5.json](./docker/solo5.json)
 file) in order to build and run the unikernel:
 
 **Dockerfile**:
