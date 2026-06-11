@@ -19,6 +19,18 @@ type t = {
 let ps_per_ns = 1_000L
 let ps_per_s = 1_000_000_000_000L
 
+let make ~offset ?(dispersion = 1e-6) ~delay secs =
+  let time = Ptime.of_float_s secs in
+  let time = Option.get time in
+  {
+    time
+  ; offset
+  ; peer_delay= delay
+  ; peer_dispersion= dispersion
+  ; root_delay= delay
+  ; root_dispersion= dispersion
+  }
+
 let to_timespec t =
   let d, ps = Ptime.(Span.to_d_ps (to_span t)) in
   let tv_sec = 86400 * d in

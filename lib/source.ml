@@ -26,7 +26,6 @@ module Reachability = struct
   type t = { mutable reachability: int; mutable size: int }
 
   let make () = { reachability= 0; size= 0 }
-  let int_size = Sys.word_size - 1
 
   let int2bin ~len v =
     let buf = Bytes.create len in

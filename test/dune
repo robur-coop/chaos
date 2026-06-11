@@ -1,0 +1,18 @@
+(library
+ (name test)
+ (modules test)
+ (libraries fmt))
+
+(test
+ (name run)
+ (modules run)
+ (libraries test chaos ipaddr ptime mirage-crypto-rng))
+
+(test
+ (name replay)
+ (modules replay dataset)
+ (deps
+  datasets/measurements.log
+  datasets/statistics.log
+  datasets/tracking.log)
+ (libraries test chaos ipaddr ptime))

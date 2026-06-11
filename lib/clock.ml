@@ -1,5 +1,3 @@
-[@@@warning "-32"]
-
 let src = Logs.Src.create "chaos.clock"
 
 module Log = (val Logs.src_log src : Logs.LOG)

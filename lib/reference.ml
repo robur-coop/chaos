@@ -1,5 +1,3 @@
-[@@@warning "-26-34-36"]
-
 let src = Logs.Src.create "chaos.reference"
 
 module Log = (val Logs.src_log src : Logs.LOG)
@@ -41,11 +39,6 @@ let refid_of_ipaddr = function
       let s = Ipaddr.V6.to_octets v6 in
       String.get_int32_be s 0 |> Int32.to_int |> ( land ) 0xffffffff
 
-[@@@ocamlformat "disable"]
-let __line0 = "=========================================================================================================================================="
-let __line1 = "   Date (UTC) Time            IP Address   St   Freq ppm   Skew ppm     Offset L Co  Offset sd Rem. corr. Root delay Root disp. Max. error"
-[@@@ocamlformat "enable"]
-
 (* [max_change] mirrors chrony's [maxchange offset delay ignore] directive:
    reject (and skip) a clock correction larger than [offset] once the first
    [delay] updates have passed, tolerating [ignore] further violations. The
@@ -54,12 +47,6 @@ let make ?logs ?(max_change = (0.0, -1, 0)) () =
   let max_offset, max_offset_delay, max_offset_ignore = max_change in
   let our_ref_id = Mirage_crypto_rng.generate 2 in
   let our_ref_id = String.get_int16_be our_ref_id 0 in
-  let header ppf =
-    Format.fprintf ppf "%s\n%!" __line0;
-    Format.fprintf ppf "%s\n%!" __line1;
-    Format.fprintf ppf "%s\n%!" __line0
-  in
-  Option.iter header logs;
   {
     are_we_synchronised= false
   ; our_root_dispersion= 1.0
@@ -143,37 +130,6 @@ let is_offset_ok t offset =
   end
   else true
 
-(*
-let write_log =
-  let last_sys_offset = ref 0.0 in
-  fun t
-    (server : Ipaddr.t * int)
-    stratum
-    now
-    combined_sources
-    freq
-    offset
-    offset_sd
-    uncorrected_offset
-    orig_root_distance
-  ->
-    match t.logs with
-    | None -> ()
-    | Some ppf ->
-        let max_error = orig_root_distance +. Float.abs !last_sys_offset in
-        let root_dispersion = get_root_dispersion t now in
-        last_sys_offset := offset -. uncorrected_offset;
-        let addr = Ipaddr.to_string (fst server) in
-        let now = Fmt.str "%a" (Ptime.pp_human ()) now in
-        let leap = leap_codes.(t.our_leap_status land 0x3) in
-        Format.fprintf ppf
-          "%s %-15s %2d %10.3f %10.3f %10.3e %c %2d %10.3e %10.3e %10.3e \
-           %10.3e %10.3e\n"
-          now addr stratum freq (1e6 *. t.our_skew) offset leap combined_sources
-          offset_sd uncorrected_offset t.our_root_delay root_dispersion
-          max_error
-*)
-
 let update t server ~stratum ?combined_sources:(_ = 0) ?(leap = 0) data =
   let open Stats in
   let raw = Clock.read_raw_time () in
@@ -181,7 +137,7 @@ let update t server ~stratum ?combined_sources:(_ = 0) ?(leap = 0) data =
      chrony's uncorrected offset): only the frequency drift since the last
      update, not the whole cumulative software correction. [now] still uses the
      total correction so the cooked time stays exact. *)
-  let pending = Clock.pending_correction raw in
+  let _pending = Clock.pending_correction raw in
   let now = Clock.cook raw in
   let elapsed = Ptime.(Span.to_float_s (diff now data.ref_time)) in
   let offset = data.offset +. (elapsed *. data.frequency) in
@@ -189,7 +145,7 @@ let update t server ~stratum ?combined_sources:(_ = 0) ?(leap = 0) data =
   let freq, residual_freq, skew = clock_estimates t data in
   Log.debug (fun m ->
       m "freq=%e residual-freq=%e skew=%e" freq residual_freq skew);
-  let orig_root_distance =
+  let _orig_root_distance =
     (t.our_root_delay /. 2.0) +. get_root_dispersion t now
   in
   if is_offset_ok t offset then begin
