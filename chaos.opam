@@ -13,7 +13,7 @@ depends: [
   "tls"
   "flux"
   "gmp"
-  "mnet"
+  "mnet" {>= "0.0.3"}
   "mnet-cli"
 ]
 build: [
