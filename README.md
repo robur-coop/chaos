@@ -53,7 +53,7 @@ ENTRYPOINT ["/chaos.hvt"]
 ```
 
 Next, you can simply start the unikernel like this (make sure port 123 is open;
-a service like NTPD is usually already running):
+a service like `ntpd` is usually already running):
 ```shell
 $ docker run --runtime=solo5 -p 123:123/udp chaos
             |      ___|
