@@ -1,0 +1,25 @@
+opam-version: "2.0"
+maintainer: "Robur <team@robur.coop>"
+authors: ["Robur <team@robur.coop>"]
+homepage: "https://github.com/robur-coop/chaos"
+dev-repo: "git+https://github.com/robur-coop/chaos.git"
+bug-reports: "https://github.com/robur-coop/chaos/issues"
+license: "GPL-2.0-only"
+
+depends: [
+  "ocaml" {>= "5.3.0"}
+  "dune" {>= "3.0.0"}
+  "mirage-crypto-rng-mkernel"
+  "tls"
+  "flux"
+  "gmp"
+  "mnet"
+  "mnet-cli"
+]
+build: [
+  [make "all"]
+]
+synopsis: "A NTP server as an unikernel"
+pin-depends: [
+  [ "zarith.dev" "git+https://github.com/mirage/Zarith.git#df8969d9bb95cffca13e31a615189ab27ada0684" ]
+]

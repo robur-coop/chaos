@@ -13,7 +13,6 @@
   domain-name
   ipaddr
   mirage-crypto-rng-mkernel
-  mkernel-memtrace
   cmdliner
   chaos
   chaos.tscclock
