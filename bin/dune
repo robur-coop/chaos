@@ -4,7 +4,6 @@
  (modes native)
  (link_flags :standard -cclib "-z solo5-abi=hvt")
  (libraries
-  re
   mkernel
   mnet
   mnet-cli
