@@ -8,10 +8,14 @@
   mnet
   mnet-cli
   mnet-dns
+  mnet-dns.cli
+  mnet-happy-eyeballs
+  mnet-happy-eyeballs.cli
   dns
   domain-name
   ipaddr
   mirage-crypto-rng-mkernel
+  mirage-ptime.solo5
   cmdliner
   chaos
   chaos.tscclock

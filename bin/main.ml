@@ -370,13 +370,13 @@ let kill_tcp_if_possible ~nameservers:(proto, _) stack hed =
       Mnet.TCP.kill (Mnet.tcp stack)
   | `Tcp -> ()
 
-let run _ (cidr, gateway, ipv6) happy_eyeballs nameservers keys ckey servers
+let run _ (cidr, gateway, ipv6, _) happy_eyeballs nameservers keys ckey servers
     range =
   let now = Mkernel.clock_monotonic () in
   let now = Int64.of_int now in
   let happy_eyeballs =
     let {
-      Mnet_cli.aaaa_timeout
+      Mnet_happy_eyeballs_cli.aaaa_timeout
     ; connect_delay
     ; connect_timeout
     ; resolve_timeout
@@ -394,7 +394,9 @@ let run _ (cidr, gateway, ipv6) happy_eyeballs nameservers keys ckey servers
   let@ () = fun () -> Mnet.kill stack in
   let hed, he = Mnet_happy_eyeballs.create ~happy_eyeballs tcp in
   let@ () = fun () -> Mnet_happy_eyeballs.kill hed in
-  let dns = Mnet_dns.create ~nameservers (udp, he) in
+  let dns_stack = Mnet_dns.Transport.stack udp he in
+  let dns = Mnet_dns.create ~nameservers dns_stack in
+  let@ () = fun () -> Mnet_dns.Transport.kill (Mnet_dns.transport dns) in
   (* NOTE(dinosaure): if our nameservers use only UDP nameservers, we can safely
      kill our TCP daemon and our happy-eyeballs daemon to save some works. This
      also means that [Mnet_happy_eyeballs.connect] will no longer work. *)
@@ -464,8 +466,8 @@ let term =
   const run
   $ Mnet_cli.setup_logs
   $ Mnet_cli.setup
-  $ Mnet_cli.setup_happy_eyeballs
-  $ Mnet_cli.setup_nameservers ()
+  $ Mnet_happy_eyeballs_cli.setup
+  $ Mnet_dns_cli.setup ()
   $ keys
   $ ckey
   $ servers

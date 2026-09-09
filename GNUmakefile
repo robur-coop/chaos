@@ -1,7 +1,12 @@
-vendors:
-	test ! -d $@
-	mkdir vendors
-	@./source.sh
+_mfetch:
+	@echo " INFER"
+	unic infer -r . -x _build -x vendors \
+		--prefer digestif.c \
+		-o _mfetch
+
+vendors: _mfetch
+	@echo " FETCH"
+	mfetch -q
 
 chaos.hvt.target: | vendors
 	@echo " BUILD bin/main.exe"

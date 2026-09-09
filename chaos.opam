@@ -25,3 +25,7 @@ synopsis: "A NTP server as an unikernel"
 pin-depends: [
   [ "zarith.dev" "git+https://github.com/mirage/Zarith.git#df8969d9bb95cffca13e31a615189ab27ada0684" ]
 ]
+x-mkernel-pre-build: [
+  ["mfetch" "fetch" "--with-dune-file" "--file=_mfetch"]
+  ["mfetch" "lock" "--file=_mfetch" "--output=_mfetch.locked"]
+]
