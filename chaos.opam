@@ -19,6 +19,7 @@ depends: [
   "mnet-cli"
   "mnet-dns"
   "mnet-happy-eyeballs"
+  "tally-mnet"
 ]
 build: [
   [make "all"]
