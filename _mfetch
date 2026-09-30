@@ -1,6 +1,8 @@
 bin
 bstr
 ca-certs-nss
+charrua
+charrua-client
 cstruct
 digestif
 gmp
@@ -14,10 +16,13 @@ mirage-ptime
 mkernel
 mnet
 mnet-cli
+mnet-dhcp
 mnet-dns
 mnet-happy-eyeballs
 mnet-tls
 slice
+tally-mkernel
+tally-mnet
 tls
 utcp
 x509

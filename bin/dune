@@ -19,6 +19,7 @@
   cmdliner
   chaos
   chaos.tscclock
+  tally-mnet
   logs.fmt
   logs.cli
   fmt.cli)

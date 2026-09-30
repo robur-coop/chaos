@@ -371,7 +371,7 @@ let kill_tcp_if_possible ~nameservers:(proto, _) stack hed =
   | `Tcp -> ()
 
 let run _ (cidr, gateway, ipv6, _) happy_eyeballs nameservers keys ckey servers
-    range =
+    range mcfg metrics =
   let now = Mkernel.clock_monotonic () in
   let now = Int64.of_int now in
   let happy_eyeballs =
@@ -387,8 +387,16 @@ let run _ (cidr, gateway, ipv6, _) happy_eyeballs nameservers keys ckey servers
     Happy_eyeballs.create ~aaaa_timeout ~connect_delay ~connect_timeout
       ~resolve_timeout ~resolve_retries now
   in
-  Mkernel.(run [ Mnet.stack ~name:"service" ?gateway ~ipv6 cidr ])
-  @@ fun (stack, tcp, udp) () ->
+  let service = Mnet.stack ~name:"service" ?gateway ~ipv6 cidr in
+  let metrics =
+    let metrics, port =
+      match metrics with
+      | Some (metrics, port) -> (Some metrics, Some port)
+      | None -> (None, None)
+    in
+    Tally_mnet.device ~name:"chaos" ~device:"metrics" mcfg ?port metrics
+  in
+  Mkernel.(run [ service; metrics ]) @@ fun (stack, tcp, udp) _metrics () ->
   let rng = Mirage_crypto_rng_mkernel.initialize (module RNG) in
   let@ () = fun () -> Mirage_crypto_rng_mkernel.kill rng in
   let@ () = fun () -> Mnet.kill stack in
@@ -461,6 +469,45 @@ let ckey =
   let open Arg in
   value & opt (some int) None & info [ "client-key" ] ~doc ~docv:"ID"
 
+let docs_metrics = "METRICS"
+
+let metrics_cidr4 =
+  let doc =
+    "The IPv4 address (with its prefix) of the metrics interface. If it's not \
+     specified, the metrics device is configured via DHCP."
+  in
+  let cidr4 = Arg.conv (Ipaddr.V4.Prefix.of_string, Ipaddr.V4.Prefix.pp) in
+  let open Arg in
+  value
+  & opt (some cidr4) None
+  & info [ "metrics-ipv4" ] ~doc ~docs:docs_metrics ~docv:"CIDRV4"
+
+let metrics_gateway4 =
+  let doc = "The IPv4 gateway of the metrics interface." in
+  let ipv4 = Arg.conv (Ipaddr.V4.of_string, Ipaddr.V4.pp) in
+  let open Arg in
+  value
+  & opt (some ipv4) None
+  & info [ "metrics-gateway" ] ~doc ~docs:docs_metrics ~docv:"IPV4"
+
+let setup_metrics_configuration cidr4 gateway4 =
+  match (cidr4, gateway4) with
+  | Some cidr4, gateway4 -> Some (cidr4, gateway4)
+  | None, _ -> None
+
+let setup_metrics_configuration =
+  let open Term in
+  const setup_metrics_configuration $ metrics_cidr4 $ metrics_gateway4
+
+let metrics_destination =
+  let doc = "The addres of the Telegraf server which collects metrics." in
+  let pp ppf (addr, port) = Fmt.pf ppf "%a:%d" Ipaddr.pp addr port in
+  let addr4 = Arg.conv (Ipaddr.with_port_of_string ~default:8094, pp) in
+  let open Arg in
+  value
+  & opt (some addr4) None
+  & info [ "metrics" ] ~doc ~docs:docs_metrics ~docv:"ADDRV4"
+
 let term =
   let open Term in
   const run
@@ -472,6 +519,8 @@ let term =
   $ ckey
   $ servers
   $ range
+  $ setup_metrics_configuration
+  $ metrics_destination
 
 let cmd =
   let info = Cmd.info "chaos" in
