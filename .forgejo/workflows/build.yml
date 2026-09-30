@@ -2,7 +2,7 @@ name: Build
 on: [push]
 jobs:
   build:
-    runs-on: ["medium", "debian-13-x86_64"]
+    runs-on: ["small", "debian-13-x86_64"]
     steps:
       - name: Install opam
         run: DEBIAN_FRONTEND=noninteractive sudo -E apt install --yes opam
