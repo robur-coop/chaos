@@ -106,6 +106,19 @@ and t = {
   ; mutable distant: int
         (* Penalty counter excluding this source from the combination while
          positive (cf. chrony's [distant]). *)
+  ; counters: counters
+  ; mutable last_sample: Sample.t option
+        (* The last sample which passed the tests (A, B and C). *)
+}
+
+and counters = {
+    mutable sent: int
+  ; mutable received: int
+  ; mutable timeouts: int
+  ; mutable unreachable: int
+  ; mutable bad_packets: int
+  ; mutable accepted_samples: int
+  ; mutable rejected_samples: int
 }
 
 let stats t = t.stats
@@ -134,7 +147,13 @@ let set_score_pending t v = t.score_pending <- v
 let distant t = t.distant
 let set_distant t v = t.distant <- v
 let set_falseticker t v = t.is_falseticker <- v
+let is_falseticker t = t.is_falseticker
 let reachability_size t = Reachability.size t.reachability
+let reachability_bits t = t.reachability.Reachability.reachability
+let local_poll t = t.local_poll
+let remote_poll t = t.remote_poll
+let counters t = t.counters
+let last_sample t = t.last_sample
 
 let source =
   Logs.Tag.def ~doc:"NTP source" "ntp.source" @@ fun ppf t ->
@@ -438,11 +457,16 @@ let end_of_roundtrip ?(tags = Logs.Tag.empty) t t1 t4 pkt auth =
            selection; a truthful sample resets it (cf. chrony replacing a
            persistent SRC_FALSETICKER pool source). *)
         if t.is_falseticker then t.falseticker_run <- t.falseticker_run + 1
-        else t.falseticker_run <- 0
+        else t.falseticker_run <- 0;
+        t.last_sample <- Some sample;
+        t.counters.accepted_samples <- t.counters.accepted_samples + 1
       in
+      if Option.is_none sample then
+        t.counters.rejected_samples <- t.counters.rejected_samples + 1;
       Option.iter fn sample
   | valid, synced ->
       if valid then t.remote_poll <- Some pkt.Packet.poll;
+      t.counters.bad_packets <- t.counters.bad_packets + 1;
       set_reachable t (valid && synced)
 
 let record_t1 _trigger ?(tags = Logs.Tag.empty) t (tx, rx) =
@@ -456,8 +480,11 @@ let record_t1 _trigger ?(tags = Logs.Tag.empty) t (tx, rx) =
           m ~tags "Roundtrip discarded by the receiver ")
   | (Sleep _ | Tx_sent _ | End_of_round_trip), _ ->
       invalid_transition ~state:"record_t1" t
-  | New_round_trip _, Ok t1 -> t.state <- Tx_sent { t1 }
+  | New_round_trip _, Ok t1 ->
+      t.counters.sent <- t.counters.sent + 1;
+      t.state <- Tx_sent { t1 }
   | Rx_received { t4; pkt; auth }, Ok t1 ->
+      t.counters.sent <- t.counters.sent + 1;
       end_of_roundtrip t t1 t4 pkt auth;
       t.state <- End_of_round_trip
   | _, Error Route_unreachable ->
@@ -465,6 +492,7 @@ let record_t1 _trigger ?(tags = Logs.Tag.empty) t (tx, rx) =
           let tags = Logs.Tag.add source t tags in
           m ~tags "Server unreachable");
       set_reachable t false;
+      t.counters.unreachable <- t.counters.unreachable + 1;
       t.state <- Server_unreachable;
       (* NOTE(dinosaure): here, [Computation.cancel] will execute [record_t4]
          iff was not signaled by the user. By this way, we clean-up everything.
@@ -482,9 +510,11 @@ let record_t4 _trigger ?(tags = Logs.Tag.empty) t (rx, tx) =
   match (t.state, result) with
   | Server_unreachable, _ -> ()
   | New_round_trip _, Ok (t4, pkt, auth) ->
+      t.counters.received <- t.counters.received + 1;
       t.remote_poll <- Some pkt.Packet.poll;
       t.state <- Rx_received { t4; pkt; auth }
   | Tx_sent { t1 }, Ok (t4, pkt, auth) ->
+      t.counters.received <- t.counters.received + 1;
       end_of_roundtrip t t1 t4 pkt auth;
       t.state <- End_of_round_trip
   | (End_of_round_trip | Sleep _ | Rx_received _), _ ->
@@ -492,6 +522,7 @@ let record_t4 _trigger ?(tags = Logs.Tag.empty) t (rx, tx) =
   | _, Error Timeout ->
       t.state <- End_of_round_trip;
       set_reachable t false;
+      t.counters.timeouts <- t.counters.timeouts + 1;
       Log.warn (fun m ->
           let tags = Logs.Tag.add source t tags in
           m ~tags "Server (%a:%d) timeout (after %d roundtrip(s))" Ipaddr.pp
@@ -640,6 +671,17 @@ let make ?(port = 123) ?key dst =
     ; updates= 0
     ; score_pending= false
     ; distant= 0
+    ; counters=
+        {
+          sent= 0
+        ; received= 0
+        ; timeouts= 0
+        ; unreachable= 0
+        ; bad_packets= 0
+        ; accepted_samples= 0
+        ; rejected_samples= 0
+        }
+    ; last_sample= None
     }
   in
   assert (Sched.Trigger.on_signal ttx t (send, comp) (record_t1 ?tags:None));

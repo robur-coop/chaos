@@ -24,6 +24,12 @@ type t = {
   ; mutable max_offset_ignore: int
         (* Number of remaining over-the-maximum corrections to tolerate. *)
   ; logs: Format.formatter option
+  ; mutable last_offset: float
+  ; mutable avg2_offset: float
+  ; mutable avg2_moving: bool
+  ; mutable combined_sources: int
+  ; mutable updates: int
+  ; mutable rejected_updates: int
 }
 
 (* Indexed by the NTP leap indicator, like chrony's [leap_codes]. *)
@@ -64,7 +70,22 @@ let make ?logs ?(max_change = (0.0, -1, 0)) () =
   ; max_offset_delay
   ; max_offset_ignore
   ; logs
+  ; last_offset= 0.0
+  ; avg2_offset= 0.0
+  ; avg2_moving= false
+  ; combined_sources= 0
+  ; updates= 0
+  ; rejected_updates= 0
   }
+
+let update_rms_offset t offset =
+  let offset2 = offset *. offset in
+  if t.avg2_moving then
+    t.avg2_offset <- t.avg2_offset +. (0.1 *. (offset2 -. t.avg2_offset))
+  else begin
+    if t.avg2_offset > 0.0 && t.avg2_offset < offset2 then t.avg2_moving <- true;
+    t.avg2_offset <- offset2
+  end
 
 let square x = x *. x
 let clamp ~min:mi ~max:ma value = Float.max (Float.min value ma) mi
@@ -130,7 +151,7 @@ let is_offset_ok t offset =
   end
   else true
 
-let update t server ~stratum ?combined_sources:(_ = 0) ?(leap = 0) data =
+let update t server ~stratum ?(combined_sources = 0) ?(leap = 0) data =
   let open Stats in
   let raw = Clock.read_raw_time () in
   (* [pending] is the residual correction reported as "Rem. corr." (like
@@ -160,8 +181,13 @@ let update t server ~stratum ?combined_sources:(_ = 0) ?(leap = 0) data =
     t.our_root_dispersion <- data.root_dispersion;
     t.our_frequency_sd <- data.frequency_sd;
     t.our_offset_sd <- data.offset_sd;
+    t.last_offset <- offset;
+    t.combined_sources <- combined_sources;
+    t.updates <- t.updates + 1;
+    update_rms_offset t offset;
     Clock.accumulate_freq_and_offset ~dfreq:freq ~doffset:offset
   end
+  else t.rejected_updates <- t.rejected_updates + 1
 
 (* Reference parameters exposed to the NTP server side, mirroring chrony's
    [REF_GetReferenceParams] (without the local-stratum fallback). *)
@@ -197,3 +223,42 @@ let get_params t now =
       ; root_delay= 0.0
       ; root_dispersion= 0.0
       }
+
+type tracking = {
+    synchronised: bool
+  ; leap: int
+  ; stratum: int
+  ; ref_id: int
+  ; last_ref_time: Ptime.t option
+  ; last_offset: float
+  ; rms_offset: float
+  ; skew: float
+  ; residual_freq: float
+  ; root_delay: float
+  ; root_dispersion: float
+  ; offset_sd: float
+  ; frequency_sd: float
+  ; combined_sources: int
+  ; updates: int
+  ; rejected_updates: int
+}
+
+let tracking t now =
+  {
+    synchronised= t.are_we_synchronised
+  ; leap= t.our_leap_status
+  ; stratum= t.our_stratum
+  ; ref_id= t.our_ref_id
+  ; last_ref_time= t.our_ref_time
+  ; last_offset= t.last_offset
+  ; rms_offset= Float.sqrt t.avg2_offset
+  ; skew= t.our_skew
+  ; residual_freq= t.our_residual_freq
+  ; root_delay= t.our_root_delay
+  ; root_dispersion= get_root_dispersion t now
+  ; offset_sd= t.our_offset_sd
+  ; frequency_sd= t.our_frequency_sd
+  ; combined_sources= t.combined_sources
+  ; updates= t.updates
+  ; rejected_updates= t.rejected_updates
+  }

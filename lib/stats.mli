@@ -44,6 +44,10 @@ val get_predict_offset : t -> Ptime.t -> float
 
 val samples : t -> int
 
+val std_dev : t -> float
+(** [std_dev t] is the estimated standard deviation of the data points (in
+    seconds), as computed by the last {!val:regression}. *)
+
 type info = {
     lo_limit: float
   ; hi_limit: float

@@ -307,6 +307,8 @@ let run dns range keyspecs ckey udp servers =
       (fun origin -> { origin; sources= []; last_resolve= Ptime.min })
       servers
   in
+  let sources () = List.concat_map (fun pool -> pool.sources) pools in
+  Metrics.register ~reference ~server:srv sources;
   let prm1 =
     Miou.async @@ fun () ->
     let sleepers = Miou.orphans () in
