@@ -9,12 +9,12 @@ vendors: _mfetch
 	mfetch -q
 
 chaos.hvt.target: | vendors
-	@echo " BUILD bin/main.exe"
-	@dune build --root . --profile=release ./bin/main.exe
-	@echo " DESCR bin/main.exe"
+	@echo " BUILD bin/unikernel.exe"
+	@dune build --root . --profile=release ./bin/unikernel.exe
+	@echo " DESCR bin/unikernel.exe"
 	@$(shell dune describe location \
 		--context solo5 --no-print-directory --root . --display=quiet \
-		./bin/main.exe 1> $@ 2>&1)
+		./bin/unikernel.exe 1> $@ 2>&1)
 
 chaos.hvt: chaos.hvt.target
 	@echo " COPY chaos.hvt"
@@ -23,19 +23,19 @@ chaos.hvt: chaos.hvt.target
 	@echo " STRIP chaos.hvt"
 	@strip $@
 
-chaos.install: chaos.hvt
-	@echo " GEN chaos.install"
+mchaos.install: chaos.hvt
+	@echo " GEN mchaos.install"
 	@ocaml install.ml > $@
 
-all: chaos.install | vendors
+all: mchaos.install | vendors
 
 .PHONY: clean
 clean:
 	if [ -d vendors ] ; then rm -fr vendors ; fi
 	rm -f chaos.hvt.target
 	rm -f chaos.hvt
-	rm -f chaos.install
+	rm -f mchaos.install
 
-install: chaos.intall
-	@echo " INSTALL chaos"
-	opam-installer chaos.install
+install: mchaos.intall
+	@echo " INSTALL mchaos"
+	opam-installer mchaos.install

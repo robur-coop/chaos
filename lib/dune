@@ -35,3 +35,9 @@
  (foreign_stubs
   (language c)
   (names tscclock)))
+
+(library
+ (name mchaos)
+ (modules mchaos)
+ (public_name mchaos)
+ (libraries chaos mnet mnet-dns))
