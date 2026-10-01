@@ -6,6 +6,18 @@ type t
 
 val make : unit -> t
 
+type counters = private {
+    mutable requests: int
+  ; mutable responses: int
+  ; mutable authenticated: int
+  ; mutable kod: int
+  ; mutable bad_auth: int
+  ; mutable ignored: int
+}
+
+val counters : t -> counters
+val clients : t -> int
+
 val handle :
      t
   -> Reference.t

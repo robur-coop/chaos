@@ -13,9 +13,33 @@ let _MAX_CLIENTS = 1024
 let _KOD_RATE = 0x52415445 (* "RATE" *)
 
 type bucket = { mutable tokens: float; mutable last: Ptime.t }
-type t = { clients: (Ipaddr.t, bucket) Hashtbl.t }
 
-let make () = { clients= Hashtbl.create 0x100 }
+type counters = {
+    mutable requests: int
+  ; mutable responses: int
+  ; mutable authenticated: int
+  ; mutable kod: int
+  ; mutable bad_auth: int
+  ; mutable ignored: int
+}
+
+type t = { clients: (Ipaddr.t, bucket) Hashtbl.t; counters: counters }
+
+let make () =
+  let counters =
+    {
+      requests= 0
+    ; responses= 0
+    ; authenticated= 0
+    ; kod= 0
+    ; bad_auth= 0
+    ; ignored= 0
+    }
+  in
+  { clients= Hashtbl.create 0x100; counters }
+
+let counters t = t.counters
+let clients t = Hashtbl.length t.clients
 
 (* [allow t peer mono] consumes a token for [peer] at monotonic time [mono] and
    returns whether the request is within the rate limit. *)
@@ -85,17 +109,27 @@ let reply ~reference ~rx request =
   }
 
 let handle t reference ~auth ~rx ~peer request =
+  t.counters.requests <- t.counters.requests + 1;
   match (Packet.flags_to_mode request.Packet.flags, auth) with
   | _, `Invalid ->
+      t.counters.bad_auth <- t.counters.bad_auth + 1;
       Log.debug (fun m ->
           m "dropping request with bad authentication from %a" Ipaddr.pp peer);
       None
   | `Client, _ ->
       let sign = match auth with `Valid kid -> Some kid | _ -> None in
       let mono = Clock.read_raw_time () in
-      if allow t peer mono then Some (reply ~reference ~rx request, sign)
+      if Option.is_some sign then
+        t.counters.authenticated <- t.counters.authenticated + 1;
+      if allow t peer mono then begin
+        t.counters.responses <- t.counters.responses + 1;
+        Some (reply ~reference ~rx request, sign)
+      end
       else begin
+        t.counters.kod <- t.counters.kod + 1;
         Log.debug (fun m -> m "rate-limited %a (KoD)" Ipaddr.pp peer);
         Some (kod_response request, sign)
       end
-  | _ -> None
+  | _ ->
+      t.counters.ignored <- t.counters.ignored + 1;
+      None

@@ -63,6 +63,23 @@ val set_falseticker : t -> bool -> unit
     [true] when its interval disagrees with the majority. Called by {!Select};
     feeds the falseticker half of {!is_dead}. *)
 
+type counters = private {
+    mutable sent: int
+  ; mutable received: int
+  ; mutable timeouts: int
+  ; mutable unreachable: int
+  ; mutable bad_packets: int
+  ; mutable accepted_samples: int
+  ; mutable rejected_samples: int
+}
+
+val counters : t -> counters
+val last_sample : t -> Sample.t option
+val is_falseticker : t -> bool
+val reachability_bits : t -> int
+val local_poll : t -> int
+val remote_poll : t -> int option
+
 (*/*)
 
 val wake_up : sleeper -> unit

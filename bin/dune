@@ -1,6 +1,6 @@
 (executable
  (name main)
- (modules main)
+ (modules main metrics)
  (modes native)
  (link_flags :standard -cclib "-z solo5-abi=hvt")
  (libraries
@@ -19,6 +19,7 @@
   cmdliner
   chaos
   chaos.tscclock
+  tally-mnet
   logs.fmt
   logs.cli
   fmt.cli)

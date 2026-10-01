@@ -469,6 +469,7 @@ let get_predict_offset t w =
     t.estimated_offset +. (elapsed *. t.estimated_frequency)
 
 let samples t = t.n_samples
+let std_dev t = t.std_dev
 
 type info = {
     lo_limit: float
