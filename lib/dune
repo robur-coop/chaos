@@ -39,4 +39,4 @@
 (library
  (name mchaos)
  (modules mchaos)
- (libraries chaos mnet))
+ (libraries chaos mnet mnet-dns))
