@@ -213,23 +213,23 @@ let kill_tcp_if_possible ~nameservers:(proto, _) stack hed =
       Mnet.TCP.kill (Mnet.tcp stack)
   | `Tcp -> ()
 
-let run _ (cidr, gateway, ipv6, _) happy_eyeballs nameservers keys ckey servers
-    range mcfg metrics =
-  let now = Mkernel.clock_monotonic () in
-  let now = Int64.of_int now in
-  let happy_eyeballs =
-    let {
-      Mnet_happy_eyeballs_cli.aaaa_timeout
-    ; connect_delay
-    ; connect_timeout
-    ; resolve_timeout
-    ; resolve_retries
-    } =
-      happy_eyeballs
-    in
-    Happy_eyeballs.create ~aaaa_timeout ~connect_delay ~connect_timeout
-      ~resolve_timeout ~resolve_retries now
+let happy_eyeballs cfg =
+  let {
+    Mnet_happy_eyeballs_cli.aaaa_timeout
+  ; connect_delay
+  ; connect_timeout
+  ; resolve_timeout
+  ; resolve_retries
+  } =
+    cfg
   in
+  let now = Int64.of_int (Mkernel.clock_monotonic ()) in
+  Happy_eyeballs.create ~aaaa_timeout ~connect_delay ~connect_timeout
+    ~resolve_timeout ~resolve_retries now
+
+let run _ (cidr, gateway, ipv6, _) cfg nameservers keys ckey servers range mcfg
+    metrics =
+  let happy_eyeballs = happy_eyeballs cfg in
   let service = Mnet.stack ~name:"service" ?gateway ~ipv6 cidr in
   let metrics =
     let metrics, port =
