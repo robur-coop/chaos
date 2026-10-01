@@ -1,10 +1,11 @@
 (executable
- (name main)
- (modules main metrics)
+ (name unikernel)
+ (modules unikernel metrics)
  (modes native)
  (link_flags :standard -cclib "-z solo5-abi=hvt")
  (libraries
   mkernel
+  mchaos
   mnet
   mnet-cli
   mnet-dns
@@ -25,28 +26,32 @@
   fmt.cli)
  (foreign_stubs
   (language c)
-  (names manifest)))
+  (names manifest.unikernel)))
 
 (rule
- (targets manifest.c)
+ (targets manifest.unikernel.c)
  (enabled_if
   (= %{context_name} "default"))
  (action
-  (write-file manifest.c "")))
+  (write-file manifest.unikernel.c "")))
 
 (rule
- (targets manifest.c)
- (deps manifest.json)
+ (targets manifest.unikernel.c)
+ (deps manifest.unikernel.json)
  (enabled_if
   (= %{context_name} "solo5"))
  (action
-  (run solo5-elftool gen-manifest manifest.json manifest.c)))
+  (run
+   solo5-elftool
+   gen-manifest
+   manifest.unikernel.json
+   manifest.unikernel.c)))
 
 (rule
- (targets manifest.json)
+ (targets manifest.unikernel.json)
  (enabled_if
   (= %{context_name} "solo5"))
  (action
   (with-stdout-to
-   manifest.json
-   (run %{exe:main.exe} --ipv4=0.0.0.0/24))))
+   manifest.unikernel.json
+   (run %{exe:unikernel.exe} --ipv4=0.0.0.0/24))))

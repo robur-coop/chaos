@@ -306,8 +306,7 @@ let keys =
 
 let ckey =
   let doc =
-    "Identifier of the key used to authenticate requests to all upstream \
-     servers."
+    "Identifier of the key used to authenticate requests to upstream servers."
   in
   let open Arg in
   value & opt (some int) None & info [ "client-key" ] ~doc ~docv:"ID"
