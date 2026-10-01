@@ -57,3 +57,57 @@
   (with-stdout-to
    manifest.unikernel.json
    (run %{exe:unikernel.exe} --ipv4=0.0.0.0/24))))
+
+(executable
+ (name front)
+ (modules front)
+ (modes native)
+ (link_flags :standard -cclib "-z solo5-abi=hvt")
+ (libraries
+  mkernel
+  mchaos
+  vifu
+  mnet-cli
+  mnet-dns
+  mnet-dns.cli
+  mnet-happy-eyeballs
+  mnet-happy-eyeballs.cli
+  dns
+  domain-name
+  mirage-crypto-rng-mkernel
+  mirage-ptime.solo5
+  ipaddr
+  re
+  chaos
+  chaos.tscclock
+  tally-mnet
+  logs.fmt
+  logs.cli
+  fmt.cli)
+ (foreign_stubs
+  (language c)
+  (names manifest.front)))
+
+(rule
+ (targets manifest.front.c)
+ (enabled_if
+  (= %{context_name} "default"))
+ (action
+  (write-file manifest.front.c "")))
+
+(rule
+ (targets manifest.front.c)
+ (deps manifest.front.json)
+ (enabled_if
+  (= %{context_name} "solo5"))
+ (action
+  (run solo5-elftool gen-manifest manifest.front.json manifest.front.c)))
+
+(rule
+ (targets manifest.front.json)
+ (enabled_if
+  (= %{context_name} "solo5"))
+ (action
+  (with-stdout-to
+   manifest.front.json
+   (run %{exe:front.exe} --ipv4=0.0.0.0/24 --server=pool.ntp.org))))
