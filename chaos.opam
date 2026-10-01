@@ -19,6 +19,8 @@ depends: [
   "digestif"
 ]
 build: [
-  ["dune" "build" "-p" name "-j" jobs]
+  ["dune" "subst"] {dev}
+  ["dune" "build" "-p" name "-j" jobs "--workspace" "dune-workspace.chaos" ]
+  ["dune" "runtest" "-p" name "-j" jobs] {with-test}
 ]
 synopsis: "A NTP library"
