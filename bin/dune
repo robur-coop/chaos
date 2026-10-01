@@ -1,6 +1,8 @@
 (executable
  (name unikernel)
  (modules unikernel metrics)
+ (public_name chaos)
+ (package mchaos)
  (modes native)
  (link_flags :standard -cclib "-z solo5-abi=hvt")
  (libraries

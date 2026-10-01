@@ -9,12 +9,12 @@ vendors: _mfetch
 	mfetch -q
 
 chaos.hvt.target: | vendors
-	@echo " BUILD bin/main.exe"
-	@dune build --root . --profile=release ./bin/main.exe
-	@echo " DESCR bin/main.exe"
+	@echo " BUILD bin/unikernel.exe"
+	@dune build --root . --profile=release ./bin/unikernel.exe
+	@echo " DESCR bin/unikernel.exe"
 	@$(shell dune describe location \
 		--context solo5 --no-print-directory --root . --display=quiet \
-		./bin/main.exe 1> $@ 2>&1)
+		./bin/unikernel.exe 1> $@ 2>&1)
 
 chaos.hvt: chaos.hvt.target
 	@echo " COPY chaos.hvt"
