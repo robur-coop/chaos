@@ -6,18 +6,16 @@ let guard ~err fn = if fn () then Ok () else Error err
 let _RESOLVE_INTERVAL = 60.0
 let _COMPACT_INTERVAL = 3600.0
 
-let rec clean_up_sleepers orphans =
+let rec clean_up orphans =
   match Miou.care orphans with
-  | None -> ()
-  | Some None -> ()
+  | None | Some None -> ()
   | Some (Some prm) ->
       begin match Miou.await prm with
-      | Ok () -> clean_up_sleepers orphans
+      | Ok () -> clean_up orphans
       | Error exn ->
           Logs.err (fun m ->
-              m "A sleeper terminated with an exception: %s"
-                (Printexc.to_string exn));
-          clean_up_sleepers orphans
+              m "Unexpected exception from a task: %s" (Printexc.to_string exn));
+          clean_up orphans
       end
 
 let rec terminate orphans =
@@ -32,158 +30,6 @@ let rec terminate orphans =
               m "A promise terminated with an exception: %s"
                 (Printexc.to_string exn));
           terminate orphans
-      end
-
-module Wk : sig
-  type t
-
-  val create : unit -> t
-  val idle : t -> unit
-  val interrupt : t -> unit
-end = struct
-  (* Level-triggered wake-up: an interruption arriving while no one is idle is
-     latched into [pending] so the next [idle] returns immediately instead of
-     blocking on a signal that already happened (avoids the lost-wakeup race).
-
-     ---- weird case ----
-     t0 | interrupt => t.pending <- true
-     t1 | idle => non-blocking (considering our Wk.t as already "awake")
-
-     ---- "normal" case ----
-     t0 | idle => await
-     t1 | interrupt => wake-up *)
-  type t = {
-      mutable pending: bool
-    ; mutable waiter: unit Miou.Computation.t option
-  }
-
-  let create () = { pending= false; waiter= None }
-
-  let interrupt t =
-    match t.waiter with
-    | Some c ->
-        t.waiter <- None;
-        ignore (Miou.Computation.try_return c ())
-    | None -> t.pending <- true
-
-  let idle t =
-    if t.pending then t.pending <- false
-    else begin
-      let c = Miou.Computation.create () in
-      t.waiter <- Some c;
-      Miou.Computation.await_exn c
-    end
-end
-
-let when_ntp_is_received _trigger ts wk =
-  ts := Chaos.Clock.read_cooked_time ();
-  Wk.interrupt wk
-
-let new_listener keys orphans udp actives wk port =
-  match Hashtbl.find_opt actives port with
-  | Some _ -> ()
-  | None ->
-      let trigger = Miou.Trigger.create () in
-      let ts = ref Ptime.min in
-      assert (Miou.Trigger.on_signal trigger ts wk when_ntp_is_received);
-      let prm =
-        Miou.async ~orphans @@ fun () ->
-        let buf = Bytes.create 0x7ff in
-        let len, (peer, _peer_port) =
-          Mnet.UDP.recvfrom udp ~port ~trigger buf
-        in
-        let str = Bytes.sub_string buf 0 len in
-        match Chaos.Packet.decode str with
-        | Ok pkt ->
-            let auth = Chaos.Auth.check keys str in
-            `Packet (!ts, pkt, auth, peer, port)
-        | Error _ -> `Unknown port
-      in
-      Hashtbl.add actives port prm
-
-let cancel_listener active_ports port prm =
-  if List.exists (Int.equal port) active_ports = false then
-    let () = Miou.cancel prm in
-    None
-  else Some prm
-
-let clean_up_listeners keys udpv4 orphans rxs actives wk =
-  let rxs = List.filter Chaos.Source.rx_active rxs in
-  let active_ports = List.map Chaos.Source.rx_port rxs in
-  let active_ports = List.sort_uniq Int.compare active_ports in
-  Hashtbl.filter_map_inplace (cancel_listener active_ports) actives;
-  let new_ports = List.filter (Fun.negate (Hashtbl.mem actives)) active_ports in
-  List.iter (new_listener keys orphans udpv4 actives wk) new_ports;
-  match Miou.care orphans with
-  | None | Some None -> rxs
-  | Some (Some prm) ->
-      let () =
-        match Miou.await prm with
-        | Ok (`Packet (ts, pkt, auth, src, src_port)) ->
-            Hashtbl.remove actives src_port;
-            List.iter
-              (Chaos.Source.rx_received ~src ~src_port ~ts ~auth pkt)
-              rxs
-        | Ok (`Unknown port) -> Hashtbl.remove actives port
-        | Error Miou.Cancelled -> ()
-        | Error exn ->
-            Logs.err (fun m ->
-                m "A listener terminated with an exception: %s"
-                  (Printexc.to_string exn))
-      in
-      rxs
-
-let rec step udp wk sleepers rxs server =
-  match Chaos.Source.handle server with
-  | `Send (src_port, pkt, tx, rx) ->
-      let dst, port = Chaos.Source.server server in
-      let _ =
-        Miou.async ~orphans:sleepers @@ fun () ->
-        Mkernel.sleep 3_000_000_000;
-        Chaos.Source.rx_timeout rx;
-        Wk.interrupt wk
-      in
-      let ts = ref Ptime.min in
-      let ok _ = Chaos.Source.tx_sent tx !ts
-      and error _ =
-        Logs.warn (fun m -> m "%a:%d unreachable" Ipaddr.pp dst port);
-        Chaos.Source.dst_unreachable tx
-      in
-      let now () = Chaos.Clock.read_cooked_time () in
-      let key = Chaos.Source.key server in
-      let len = Option.map (fun _ -> 48 + Chaos.Auth.mac_length) key in
-      let len = Option.value ~default:48 len in
-      (* NOTE(dinosaure): [fn] is executed **after** the discovery
-         of routes. When the new NTPv4 packet is sent, we have the most accurate
-         time of transmission from the perspective of the unikernel. *)
-      let fn bstr =
-        ts := Chaos.Packet.encode_into ~now pkt bstr;
-        Option.iter (fun k -> Chaos.Auth.append_into k bstr) key
-      in
-      Mnet.UDP.sendfn udp ~src_port ~dst ~port ~len fn |> Result.fold ~ok ~error;
-      Wk.interrupt wk;
-      step udp wk sleepers (rx :: rxs) server
-  | `Await -> `Continue (rxs, server)
-  | `Falseticker | `Server_unreachable -> `Stop rxs
-  | `Sleep (sleeper, ns) ->
-      let _ =
-        Miou.async ~orphans:sleepers @@ fun () ->
-        Mkernel.sleep ns;
-        Chaos.Source.wake_up sleeper;
-        Wk.interrupt wk
-      in
-      step udp wk sleepers rxs server
-
-let rec clean_up orphans =
-  match Miou.care orphans with
-  | None | Some None -> ()
-  | Some (Some prm) ->
-      begin match Miou.await prm with
-      | Ok () -> clean_up orphans
-      | Error exn ->
-          Logs.err (fun m ->
-              m "Unexpected exception from a task: %s" (Printexc.to_string exn));
-          clean_up orphans
       end
 
 let handler ~orphans keys udp srv reference raw rx peer peer_port =
@@ -276,9 +122,8 @@ let resolve dns range ckey now pool =
 
 let run dns range keyspecs ckey udp servers =
   let _ = Chaos.Clock.init Tscclock.now in
-  let wk = Wk.create () in
+  let wk = Mchaos.waker () in
   let last_compact = ref (Chaos.Clock.read_raw_time ()) in
-  let actives = Hashtbl.create 0x10 in
   let reference = Chaos.Reference.make () in
   let srv = Chaos.Server.make () in
   let keys = Chaos.Auth.make keyspecs in
@@ -312,38 +157,34 @@ let run dns range keyspecs ckey udp servers =
   let prm1 =
     Miou.async @@ fun () ->
     let sleepers = Miou.orphans () in
-    let listeners = Miou.orphans () in
+    let listeners = Mchaos.listeners () in
     let step_pool rxs pool =
       let fn (sources, rxs) source =
-        match step udp wk sleepers [] source with
-        | `Continue ([], source) -> (source :: sources, rxs)
-        | `Continue (rxs', source) ->
-            (source :: sources, List.rev_append rxs' rxs)
-        | `Stop [] -> (sources, rxs)
-        | `Stop rxs' -> (sources, List.rev_append rxs' rxs)
+        match Mchaos.step udp wk sleepers rxs source with
+        | `Continue, rxs -> (source :: sources, rxs)
+        | `Stop, rxs -> (sources, rxs)
       in
       let sources, rxs = List.fold_left fn ([], rxs) pool.sources in
       pool.sources <- List.rev sources;
       rxs
     in
     let rec go rxs =
-      clean_up_sleepers sleepers;
+      clean_up sleepers;
       let now = Chaos.Clock.read_cooked_time () in
       List.iter (resolve dns range ckey now) pools;
       let rxs = List.fold_left step_pool rxs pools in
-      let rxs = clean_up_listeners keys udp listeners rxs actives wk in
+      let rxs = Mchaos.listen keys udp wk listeners rxs in
       let servers = List.concat_map (fun pool -> pool.sources) pools in
       match servers with
       | [] when not (List.exists is_domain_pool pools) ->
-          let prms = Hashtbl.to_seq_values actives in
-          Seq.iter Miou.cancel prms; terminate sleepers
+          Mchaos.kill listeners; terminate sleepers
       | [] ->
           let _ =
             Miou.async ~orphans:sleepers @@ fun () ->
             Mkernel.sleep (int_of_float (_RESOLVE_INTERVAL *. 1e9));
-            Wk.interrupt wk
+            Mchaos.interrupt wk
           in
-          Wk.idle wk; go rxs
+          Mchaos.idle wk; go rxs
       | servers ->
           let now = Chaos.Clock.read_cooked_time () in
           let res = Chaos.Select.select now servers in
@@ -355,7 +196,7 @@ let run dns range keyspecs ckey udp servers =
           in
           Option.iter fn res;
           (compact [@inlined]) last_compact rxs;
-          Wk.idle wk;
+          Mchaos.idle wk;
           go rxs
     in
     go []
