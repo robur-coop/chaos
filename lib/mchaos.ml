@@ -184,3 +184,97 @@ let rec step udp wk sleepers rxs source =
         Wk.interrupt wk
       in
       step udp wk sleepers rxs source
+
+let rec clean_up orphans =
+  match Miou.care orphans with
+  | None | Some None -> ()
+  | Some (Some prm) ->
+      begin match Miou.await prm with
+      | Ok () -> clean_up orphans
+      | Error exn ->
+          Log.err (fun m ->
+              m "Unexpected exception from a task: %s" (Printexc.to_string exn));
+          clean_up orphans
+      end
+
+type origin = [ `Ipaddr of Ipaddr.t | `Domain_name of [ `host ] Domain_name.t ]
+
+type state = {
+    reference: Chaos.Reference.t
+  ; mutable source: Chaos.Source.t option
+  ; server: origin * int
+  ; started: Ptime.t
+}
+
+and daemon = unit Miou.t
+
+let _RETRY_INTERVAL = 60_000_000_000
+
+let make_source dns ckey state =
+  let origin, port = state.server in
+  match origin with
+  | `Ipaddr ipaddr -> Some (Chaos.Source.make ~port ?key:ckey ipaddr)
+  | `Domain_name domain_name -> (
+      match Mnet_dns.getaddrinfo dns Dns.Rr_map.A domain_name with
+      | Ok (_ttl, set) when not (Ipaddr.V4.Set.is_empty set) ->
+          let ipaddr = Ipaddr.V4 (Ipaddr.V4.Set.choose set) in
+          Log.info (fun m ->
+              m "%a resolved to %a" Domain_name.pp domain_name Ipaddr.pp ipaddr);
+          Some (Chaos.Source.make ~port ?key:ckey ipaddr)
+      | Ok _ ->
+          Log.warn (fun m ->
+              m "%a has no IPv4 address" Domain_name.pp domain_name);
+          None
+      | Error (`Msg msg) ->
+          Log.warn (fun m ->
+              m "Cannot resolve %a: %s" Domain_name.pp domain_name msg);
+          None)
+
+let client dns udp keys ckey server =
+  let state =
+    {
+      reference= Chaos.Reference.make ()
+    ; source= None
+    ; server
+    ; started= Chaos.Clock.read_raw_time ()
+    }
+  in
+  let wk = waker () in
+  let sleepers = Miou.orphans () in
+  let listeners = listeners () in
+  let rec go rxs =
+    clean_up sleepers;
+    match state.source with
+    | None ->
+        Mkernel.sleep _RETRY_INTERVAL;
+        state.source <- make_source dns ckey state;
+        go rxs
+    | Some source ->
+        let status, rxs = step udp wk sleepers rxs source in
+        let rxs = listen keys udp wk listeners rxs in
+        begin match status with
+        | `Stop ->
+            let ipaddr, port = Chaos.Source.server source in
+            Log.warn (fun m ->
+                m "%a:%d is no longer usable, retry in %ds" Ipaddr.pp ipaddr
+                  port
+                  (_RETRY_INTERVAL / 1_000_000_000));
+            state.source <- None
+        | `Continue ->
+            let now = Chaos.Clock.read_cooked_time () in
+            let fn (source, data, combined_sources, leap) =
+              let server = Chaos.Source.server source in
+              let stratum = Chaos.Source.stratum source in
+              Chaos.Reference.update state.reference ~stratum ~combined_sources
+                ~leap server data
+            in
+            Option.iter fn (Chaos.Select.select now [ source ])
+        end;
+        idle wk;
+        go rxs
+  in
+  state.source <- make_source dns ckey state;
+  let prm = Miou.async @@ fun () -> go [] in
+  (prm, state)
+
+let stop = Miou.cancel

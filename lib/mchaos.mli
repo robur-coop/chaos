@@ -24,3 +24,25 @@ val step :
   -> Chaos.Source.rx list
   -> Chaos.Source.t
   -> [ `Continue | `Stop ] * Chaos.Source.rx list
+
+(** {2 Client.} *)
+
+type origin = [ `Ipaddr of Ipaddr.t | `Domain_name of [ `host ] Domain_name.t ]
+type daemon
+
+type state = private {
+    reference: Chaos.Reference.t
+  ; mutable source: Chaos.Source.t option
+  ; server: origin * int
+  ; started: Ptime.t
+}
+
+val client :
+     Mnet_dns.t
+  -> Mnet.UDP.state
+  -> Chaos.Auth.t
+  -> Chaos.Auth.key option
+  -> origin * int
+  -> daemon * state
+
+val stop : daemon -> unit
