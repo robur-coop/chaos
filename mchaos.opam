@@ -20,6 +20,8 @@ depends: [
   "mnet-dns"
   "mnet-happy-eyeballs"
   "tally-mnet"
+  "mhttp"
+  "vifu"
   "chaos" {= version}
 ]
 build: [
