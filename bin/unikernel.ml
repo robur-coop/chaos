@@ -227,18 +227,8 @@ let happy_eyeballs cfg =
   Happy_eyeballs.create ~aaaa_timeout ~connect_delay ~connect_timeout
     ~resolve_timeout ~resolve_retries now
 
-let run _ (cidr, gateway, ipv6, _) cfg nameservers keys ckey servers range mcfg
-    metrics =
+let run _ service cfg nameservers keys ckey servers range metrics =
   let happy_eyeballs = happy_eyeballs cfg in
-  let service = Mnet.stack ~name:"service" ?gateway ~ipv6 cidr in
-  let metrics =
-    let metrics, port =
-      match metrics with
-      | Some (metrics, port) -> (Some metrics, Some port)
-      | None -> (None, None)
-    in
-    Tally_mnet.device ~name:"chaos" ~device:"metrics" mcfg ?port metrics
-  in
   Mkernel.(run [ service; metrics ]) @@ fun (stack, tcp, udp) _metrics () ->
   let rng = Mirage_crypto_rng_mkernel.initialize (module RNG) in
   let@ () = fun () -> Mirage_crypto_rng_mkernel.kill rng in
@@ -313,10 +303,11 @@ let ckey =
 
 let docs_metrics = "METRICS"
 
-let metrics_cidr4 =
+let metrics_ipv4 =
   let doc =
-    "The IPv4 address (with its prefix) of the metrics interface. If it's not \
-     specified, the metrics device is configured via DHCP."
+    "The IPv4 address (with its prefix) of the metrics interface. If it is not \
+     specified (and a metrics destination is given), the metrics interface is \
+     configured via a DHCP server."
   in
   let cidr4 = Arg.conv (Ipaddr.V4.Prefix.of_string, Ipaddr.V4.Prefix.pp) in
   let open Arg in
@@ -324,45 +315,62 @@ let metrics_cidr4 =
   & opt (some cidr4) None
   & info [ "metrics-ipv4" ] ~doc ~docs:docs_metrics ~docv:"CIDRV4"
 
-let metrics_gateway4 =
+let metrics_ipv4_gateway =
   let doc = "The IPv4 gateway of the metrics interface." in
-  let ipv4 = Arg.conv (Ipaddr.V4.of_string, Ipaddr.V4.pp) in
+  let gateway4 = Arg.conv (Ipaddr.V4.of_string, Ipaddr.V4.pp) in
   let open Arg in
   value
-  & opt (some ipv4) None
-  & info [ "metrics-gateway" ] ~doc ~docs:docs_metrics ~docv:"IPV4"
+  & opt (some gateway4) None
+  & info [ "metrics-ipv4-gateway" ] ~doc ~docs:docs_metrics ~docv:"IPV4"
 
-let setup_metrics_configuration cidr4 gateway4 =
-  match (cidr4, gateway4) with
-  | Some cidr4, gateway4 -> Some (cidr4, gateway4)
-  | None, _ -> None
+let metrics =
+  let doc =
+    "The address of the Telegraf server which collects metrics. If it is not \
+     specified, metrics are not reported."
+  in
+  let pp ppf (ipaddr, port) = Fmt.pf ppf "%a:%d" Ipaddr.pp ipaddr port in
+  let addr = Arg.conv (Ipaddr.with_port_of_string ~default:8094, pp) in
+  let open Arg in
+  value
+  & opt (some addr) None
+  & info [ "metrics" ] ~doc ~docs:docs_metrics ~docv:"IPADDR"
 
-let setup_metrics_configuration =
+let name ~default =
+  let doc = "The name of the unikernel." in
+  let open Arg in
+  value
+  & opt string default
+  & info [ "name" ] ~doc ~docs:docs_metrics ~docv:"NAME"
+
+let setup_metrics ipv4 gateway dst name =
+  let cfg = Option.map (fun ipv4 -> (ipv4, gateway)) ipv4 in
+  let dst, port =
+    match dst with
+    | Some (dst, port) -> (Some dst, Some port)
+    | None -> (None, None)
+  in
+  Tally_mnet.device ~device:"metrics" ~name cfg ?port dst
+
+let setup_metrics ~default =
   let open Term in
-  const setup_metrics_configuration $ metrics_cidr4 $ metrics_gateway4
-
-let metrics_destination =
-  let doc = "The addres of the Telegraf server which collects metrics." in
-  let pp ppf (addr, port) = Fmt.pf ppf "%a:%d" Ipaddr.pp addr port in
-  let addr4 = Arg.conv (Ipaddr.with_port_of_string ~default:8094, pp) in
-  let open Arg in
-  value
-  & opt (some addr4) None
-  & info [ "metrics" ] ~doc ~docs:docs_metrics ~docv:"ADDRV4"
+  const setup_metrics
+  $ metrics_ipv4
+  $ metrics_ipv4_gateway
+  $ metrics
+  $ name ~default
 
 let term =
   let open Term in
   const run
   $ Mnet_cli.setup_logs
-  $ Mnet_cli.setup
+  $ Mnet_cli.setup "service"
   $ Mnet_happy_eyeballs_cli.setup
   $ Mnet_dns_cli.setup ()
   $ keys
   $ ckey
   $ servers
   $ range
-  $ setup_metrics_configuration
-  $ metrics_destination
+  $ setup_metrics ~default:"chaos"
 
 let cmd =
   let info = Cmd.info "chaos" in

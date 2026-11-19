@@ -376,13 +376,8 @@ let happy_eyeballs cfg =
   Happy_eyeballs.create ~aaaa_timeout ~connect_delay ~connect_timeout
     ~resolve_timeout ~resolve_retries now
 
-let run _ (cidr4, gateway4, ipv6, gateway6) cfg nameservers metrics port keys
-    ckey server =
+let run _ service cfg nameservers metrics port keys ckey server =
   let happy_eyeballs = happy_eyeballs cfg in
-  let service =
-    Mnet.stack ~name:"service" ?gateway:gateway4 cidr4 ~ipv6
-      ?ipv6_gateway:gateway6
-  in
   Mkernel.(run [ rng; service; metrics ])
   @@ fun _rng (stack, tcp, udp) _metrics () ->
   let@ () = fun () -> Mnet.kill stack in
@@ -548,11 +543,11 @@ let metrics =
   & opt (some addr) None
   & info [ "metrics" ] ~doc ~docs:docs_metrics ~docv:"IPADDR"
 
-let name =
+let name ~default =
   let doc = "The name of the unikernel." in
   let open Arg in
   value
-  & opt string "front"
+  & opt string default
   & info [ "name" ] ~doc ~docs:docs_metrics ~docv:"NAME"
 
 let setup_metrics ipv4 gateway dst name =
@@ -564,9 +559,13 @@ let setup_metrics ipv4 gateway dst name =
   in
   Tally_mnet.device ~device:"metrics" ~name cfg ?port dst
 
-let setup_metrics =
+let setup_metrics ~default =
   let open Term in
-  const setup_metrics $ metrics_ipv4 $ metrics_ipv4_gateway $ metrics $ name
+  const setup_metrics
+  $ metrics_ipv4
+  $ metrics_ipv4_gateway
+  $ metrics
+  $ name ~default
 
 let keys =
   let doc =
@@ -588,10 +587,10 @@ let term =
   let open Term in
   const run
   $ setup_logs
-  $ Mnet_cli.setup
+  $ Mnet_cli.setup "service"
   $ Mnet_happy_eyeballs_cli.setup
   $ Mnet_dns_cli.setup ()
-  $ setup_metrics
+  $ setup_metrics ~default:"chaos.web"
   $ port
   $ keys
   $ client_key
