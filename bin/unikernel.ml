@@ -81,11 +81,11 @@ and pool = {
 let is_domain_pool pool =
   match pool.origin with `Domain_name _ -> true | `Ipaddr _ -> false
 
-let resolve dns range ckey now pool =
+let resolve dns range ckey locals now pool =
   match pool.origin with
   | `Ipaddr ipaddr ->
       if pool.sources = [] then
-        pool.sources <- [ Chaos.Source.make ?key:ckey ipaddr ]
+        pool.sources <- [ Chaos.Source.make ?key:ckey ~locals ipaddr ]
   | `Domain_name domain_name ->
       let lo, hi = range in
       let n = List.length pool.sources in
@@ -112,7 +112,7 @@ let resolve dns range ckey now pool =
                   m "%a: adding %d source(s) from re-resolution" Domain_name.pp
                     domain_name (List.length chosen));
             let added =
-              List.map (fun ip -> Chaos.Source.make ?key:ckey ip) chosen
+              List.map (fun ip -> Chaos.Source.make ?key:ckey ~locals ip) chosen
             in
             pool.sources <- pool.sources @ added
         | Error (`Msg msg) ->
@@ -120,7 +120,7 @@ let resolve dns range ckey now pool =
                 m "Cannot resolve %a: %s" Domain_name.pp domain_name msg)
       end
 
-let run dns range keyspecs ckey udp servers =
+let run dns range keyspecs ckey locals udp servers =
   let _ = Chaos.Clock.init Tscclock.now in
   let wk = Mchaos.waker () in
   let last_compact = ref (Chaos.Clock.read_raw_time ()) in
@@ -171,7 +171,7 @@ let run dns range keyspecs ckey udp servers =
     let rec go rxs =
       clean_up sleepers;
       let now = Chaos.Clock.read_cooked_time () in
-      List.iter (resolve dns range ckey now) pools;
+      List.iter (resolve dns range ckey locals now) pools;
       let rxs = List.fold_left step_pool rxs pools in
       let rxs = Mchaos.listen keys udp wk listeners rxs in
       let servers = List.concat_map (fun pool -> pool.sources) pools in
@@ -227,7 +227,7 @@ let happy_eyeballs cfg =
   Happy_eyeballs.create ~aaaa_timeout ~connect_delay ~connect_timeout
     ~resolve_timeout ~resolve_retries now
 
-let run _ service cfg nameservers keys ckey servers range metrics =
+let run _ service cfg nameservers keys ckey servers range public metrics =
   let happy_eyeballs = happy_eyeballs cfg in
   Mkernel.(run [ service; metrics ]) @@ fun (stack, tcp, udp) _metrics () ->
   let rng = Mirage_crypto_rng_mkernel.initialize (module RNG) in
@@ -243,7 +243,13 @@ let run _ service cfg nameservers keys ckey servers range metrics =
      also means that [Mnet_happy_eyeballs.connect] will no longer work. *)
   kill_tcp_if_possible ~nameservers stack hed;
   let _ = Tscclock.init () in
-  run dns range keys ckey udp servers
+  let locals =
+    List.filter_map
+      (function Ipaddr.V4 v4 -> Some v4 | Ipaddr.V6 _ -> None)
+      (List.map Ipaddr.Prefix.address (Mnet.addresses stack))
+  in
+  let locals = List.sort_uniq Ipaddr.V4.compare (public @ locals) in
+  run dns range keys ckey locals udp servers
 
 open Cmdliner
 
@@ -300,6 +306,17 @@ let ckey =
   in
   let open Arg in
   value & opt (some int) None & info [ "client-key" ] ~doc ~docv:"ID"
+
+let public =
+  let doc =
+    "A public IPv4 address which designates this unikernel (for instance when \
+     it is behind a NAT). Replies from servers synchronised to one of these \
+     addresses (or to the address of the service interface) are discarded to \
+     avoid a synchronisation loop. This option can be repeated."
+  in
+  let ipv4 = Arg.conv (Ipaddr.V4.of_string, Ipaddr.V4.pp) in
+  let open Arg in
+  value & opt_all ipv4 [] & info [ "public-ipv4" ] ~doc ~docv:"IPV4"
 
 let docs_metrics = "METRICS"
 
@@ -370,6 +387,7 @@ let term =
   $ ckey
   $ servers
   $ range
+  $ public
   $ setup_metrics ~default:"chaos"
 
 let cmd =
