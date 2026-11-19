@@ -1,7 +1,8 @@
 _mfetch:
 	@echo " INFER"
 	unic infer -r . -x _build -x vendors \
-		--prefer digestif.c --prefer mirage-ptime.solo5 \
+		--prefer digestif.c --prefer checkseum.c \
+                --prefer mirage-ptime.solo5 \
 		-o _mfetch
 
 vendors: _mfetch
