@@ -18,7 +18,7 @@ module Reachability : sig
   val pp : t Fmt.t
 end
 
-val make : ?port:int -> ?key:Auth.key -> Ipaddr.t -> t
+val make : ?port:int -> ?key:Auth.key -> ?locals:Ipaddr.V4.t list -> Ipaddr.t -> t
 val server : t -> Ipaddr.t * int
 val handle : ?tags:Logs.Tag.set -> t -> event
 val stats : t -> Stats.t

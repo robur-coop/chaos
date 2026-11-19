@@ -86,6 +86,9 @@ and t = {
   ; mutable falseticker_run: int
         (* Consecutive usable samples taken while flagged a falseticker; reset on
          a truthful sample. Used to declare a persistent falseticker dead. *)
+  ; locals: int list
+        (* NTP reference ids (IPv4 addresses) designating us. A reply whose
+         [ref_id] is one of them comes from a server synchronised to us. *)
   ; key: Auth.key option
         (* Symmetric key used to authenticate exchanges with this source (the
          client signs its requests and requires authenticated responses). *)
@@ -266,6 +269,10 @@ let synced_packet pkt =
   && (pkt.Packet.root_delay /. 2.0) +. pkt.Packet.root_dispersion
      < _MAX_DISPERSION
 
+let is_looping t pkt =
+  (* NOTE(dinosaure): stratum 1 have a text ref_id where others have an integer *)
+  pkt.Packet.stratum >= 2 && List.mem pkt.Packet.ref_id t.locals
+
 let get_poll_adjusted t error_in_estimate peer_distance =
   if error_in_estimate > peer_distance then
     Float.(neg (log (error_in_estimate /. peer_distance))) /. Float.log 2.0
@@ -410,7 +417,14 @@ let end_of_roundtrip ?(tags = Logs.Tag.empty) t t1 t4 pkt auth =
         let tags = Logs.Tag.add source t tags in
         m ~tags "Discarding an unauthenticated response from %a:%d" Ipaddr.pp
           t.dst t.port);
-  match (valid_packet ~t1 pkt && authentication, synced_packet pkt) with
+  let looping = is_looping t pkt in
+  if looping && valid_packet ~t1 pkt then
+    Logs.warn (fun m ->
+        let tags = Logs.Tag.add source t tags in
+        m ~tags "Synchronisation loop: %a:%d is synchronised to us" Ipaddr.pp
+          t.dst t.port);
+  let synced = synced_packet pkt && not looping in
+  match (valid_packet ~t1 pkt && authentication, synced) with
   | true, true ->
       Logs.debug (fun m ->
           let tags = Logs.Tag.add source t tags in
@@ -625,7 +639,10 @@ let handle ?(tags = Logs.Tag.empty) t =
 let on_slew t ~raw:_ ~cooked ~dfreq ~doffset =
   Stats.slew_samples t.stats cooked dfreq doffset
 
-let make ?(port = 123) ?key dst =
+let refid_of_ipv4 v4 = Int32.to_int (Ipaddr.V4.to_int32 v4) land 0xffffffff
+
+let make ?(port = 123) ?key ?(locals = []) dst =
+  let locals = List.map refid_of_ipv4 locals in
   let pkt =
     {
       Packet.flags= 0x23 (* NTPv4, Client mode *)
@@ -663,6 +680,7 @@ let make ?(port = 123) ?key dst =
     ; unreachable_run= 0
     ; is_falseticker= false
     ; falseticker_run= 0
+    ; locals
     ; key
     ; stratum= None
     ; leap= 0
