@@ -15,6 +15,7 @@ jobs:
         uses: ocaml/setup-ocaml@v3
         with:
           ocaml-compiler: ${{ matrix.ocaml-version }}
+          opam-disable-sandboxing: true
           opam-local-packages: |
             *.opam
       - name: Install dependencies
